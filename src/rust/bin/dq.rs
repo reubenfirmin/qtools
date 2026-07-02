@@ -61,7 +61,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    let all_results = scan_path(&dir, args.threads.max(1) as usize, metadata.dev(), HashSet::from(["/proc", "/sys"]), !args.noprogress);
+    let all_results = scan_path(&dir, args.threads.max(1) as usize, metadata.dev(), HashSet::from([Path::new("/proc"), Path::new("/sys")]), !args.noprogress);
 
     if !all_results.contains_key(&dir) {
         eprintln!("dq: could not read '{}' (permission denied?)", dir);
@@ -108,7 +108,7 @@ fn main() {
  * Iterate a path and its subdirectories, collecting the size of each directory by summing files
  * within it.
  */
-fn scan_path(dir: &str, threads: usize, device: u64, blacklist: HashSet<&str>, show_progress: bool) -> HashMap<String, u64> {
+fn scan_path(dir: &str, threads: usize, device: u64, blacklist: HashSet<&Path>, show_progress: bool) -> HashMap<String, u64> {
     // set up a channel to receive results back from threads
     let (tx, rx) = std::sync::mpsc::channel();
 
@@ -136,8 +136,7 @@ fn scan_path(dir: &str, threads: usize, device: u64, blacklist: HashSet<&str>, s
                 let displayed = it.path.display().to_string();
                 results.insert(displayed, it.size);
                 for subpath in it.paths {
-                    let subdisplay = subpath.display().to_string();
-                    if !blacklist.contains(&*subdisplay) {
+                    if !blacklist.contains(subpath.as_path()) {
                         pending += 1;
                         submit(subpath, device, &pool, tx.clone());
                     }
@@ -177,19 +176,27 @@ fn process_directory(dir_path: &Path, device: u64) -> Result<DirMetadata, Box<dy
     let mut size = 0;
 
     for entry in fs::read_dir(dir_path)? {
-        let subpath = entry?.path();
+        let entry = entry?;
 
-        // One stat per entry. symlink_metadata does not follow symlinks, so a single call lets us
-        // both detect symlinks and read size/device without re-statting.
-        let metadata = match subpath.symlink_metadata() {
+        // file_type() reads the kernel's d_type from the directory listing itself (no extra
+        // syscall on most Linux filesystems), letting us skip symlinks without stat'ing them.
+        let is_symlink = match entry.file_type() {
+            Ok(ft) => ft.is_symlink(),
+            Err(_) => continue
+        };
+        if is_symlink {
+            continue;
+        }
+
+        // entry.metadata() stats relative to the already-open directory (fstatat), which is
+        // faster than symlink_metadata(entry.path()) re-resolving the whole path from scratch.
+        let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(_) => continue
         };
 
-        if metadata.file_type().is_symlink() {
-            continue
-        } else if metadata.is_dir() && metadata.dev() == device {
-            result.paths.push(subpath);
+        if metadata.is_dir() && metadata.dev() == device {
+            result.paths.push(entry.path());
         } else {
             size += metadata.len();
         }

@@ -18,6 +18,8 @@ $ pq                            # what's eating my CPU/memory/swap right now
 $ dq                            # what's using disk space in the current directory
 ```
 
+`sudo ./install.sh` installs system-wide (to `/usr/local/bin`) instead of just for your user.
+
 ## dq (disk query)
 
 ![dq](./dq.png)

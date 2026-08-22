@@ -13,7 +13,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: version
         name: Require the tag to match Cargo.toml
         shell: bash
@@ -44,7 +44,7 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             arch: aarch64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:
@@ -67,10 +67,10 @@ jobs:
           packaging/appimage/build.sh "${{ matrix.target }}" "${{ matrix.arch }}" \
             "${{ needs.validate.outputs.version }}" "$PWD/appimagetool-root/AppRun" "$PWD/dist"
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/Qtools-${{ matrix.arch }}.AppImage
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: qtools-appimage-${{ matrix.arch }}
           path: dist/Qtools-${{ matrix.arch }}.AppImage*
@@ -83,8 +83,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: qtools-appimage-*
           path: repo

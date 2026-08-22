@@ -2,5 +2,4 @@
 /pq
 /docs/
 .idea
-/Cargo.lock
 /target/

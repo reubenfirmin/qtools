@@ -25,6 +25,24 @@ such as `pq --net --help`, `pq --kill --help`, and `dq --json --help` open the m
 
 `sudo ./install.sh` installs system-wide (to `/usr/local/bin`) instead of just for your user.
 
+### Cross-distribution AppImage
+
+Release builds are available from [qtools.sh](https://qtools.sh/) as one AppImage containing both
+commands. Download the build for your architecture, make it executable, and let it install itself:
+
+```sh
+chmod +x Qtools-x86_64.AppImage
+./Qtools-x86_64.AppImage --install
+pq --help
+dq --help
+```
+
+This copies the AppImage to `~/.local/bin/qtools.AppImage` and creates the `qtools`, `pq`, and `dq`
+symlinks there. It does not require root or pipe downloaded code into a shell. `qtools update` uses
+the standard AppImage zsync updater when `appimageupdatetool` is installed; `qtools uninstall`
+removes the per-user installation. Maintainer instructions are in
+[`packaging/RELEASE.md`](packaging/RELEASE.md).
+
 ## dq (disk query)
 
 ![dq](./dq.png)

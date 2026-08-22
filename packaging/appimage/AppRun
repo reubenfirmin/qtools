@@ -1,0 +1,105 @@
+#!/bin/sh
+set -eu
+
+appdir=${APPDIR:?AppImage runtime did not set APPDIR}
+invoked=${ARGV0:-$0}
+command_name=$(basename -- "$invoked")
+
+case "$command_name" in
+    dq|pq)
+        exec "$appdir/usr/bin/$command_name" "$@"
+        ;;
+esac
+
+version=$(cat "$appdir/usr/share/qtools/VERSION")
+bin_dir=${HOME:?HOME is not set}/.local/bin
+installed_image=$bin_dir/qtools.AppImage
+
+usage() {
+    cat <<EOF
+qtools $version
+
+Usage:
+  $invoked --install       Install qtools, dq, and pq for this user
+  qtools update            Update through the standard AppImage updater
+  qtools uninstall         Remove the user installation
+  qtools version           Show the installed version
+
+Direct use:
+  $invoked dq [ARGS...]
+  $invoked pq [ARGS...]
+EOF
+}
+
+link_command() {
+    name=$1
+    link=$bin_dir/$name
+    if [ -e "$link" ] && [ ! -L "$link" ]; then
+        echo "qtools: refusing to replace unrelated file: $link" >&2
+        exit 1
+    fi
+    if [ -L "$link" ]; then
+        destination=$(readlink "$link")
+        if [ "$destination" != "qtools.AppImage" ]; then
+            echo "qtools: refusing to replace unrelated symlink: $link -> $destination" >&2
+            exit 1
+        fi
+    fi
+    temporary=$bin_dir/.qtools-link-$$-$name
+    ln -s qtools.AppImage "$temporary"
+    mv -f "$temporary" "$link"
+}
+
+install_image() {
+    source_image=${APPIMAGE:?AppImage runtime did not set APPIMAGE}
+    mkdir -p "$bin_dir"
+    temporary=$bin_dir/.qtools.AppImage.$$
+    trap 'rm -f "$temporary"' EXIT HUP INT TERM
+    cp "$source_image" "$temporary"
+    chmod 0755 "$temporary"
+    mv -f "$temporary" "$installed_image"
+    trap - EXIT HUP INT TERM
+    link_command qtools
+    link_command dq
+    link_command pq
+    echo "Installed qtools $version to $installed_image"
+    case :${PATH:-}: in
+        *:"$bin_dir":*) ;;
+        *) echo "Note: $bin_dir is not on PATH." ;;
+    esac
+}
+
+update_image() {
+    current=${APPIMAGE:?AppImage runtime did not set APPIMAGE}
+    if ! command -v appimageupdatetool >/dev/null 2>&1; then
+        echo "qtools: appimageupdatetool is required for standard zsync updates" >&2
+        echo "Get AppImageUpdate from https://github.com/AppImageCommunity/AppImageUpdate" >&2
+        exit 1
+    fi
+    exec appimageupdatetool "$current"
+}
+
+uninstall_image() {
+    for name in qtools dq pq; do
+        link=$bin_dir/$name
+        if [ -L "$link" ] && [ "$(readlink "$link")" = "qtools.AppImage" ]; then
+            rm "$link"
+        fi
+    done
+    if [ -f "$installed_image" ]; then rm "$installed_image"; fi
+    echo "Removed the qtools user installation"
+}
+
+case "${1:-}" in
+    --install|install) install_image ;;
+    update) update_image ;;
+    uninstall) uninstall_image ;;
+    version|--version|-V) echo "qtools $version" ;;
+    dq|pq)
+        selected=$1
+        shift
+        exec "$appdir/usr/bin/$selected" "$@"
+        ;;
+    help|--help|-h|"") usage ;;
+    *) echo "qtools: unknown command '$1'" >&2; usage >&2; exit 2 ;;
+esac

@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Require the tag to match Cargo.toml
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+          test -n "$version"
+          test "${GITHUB_REF_NAME}" = "v${version}"
+          test -s packaging/appimage/qtools-release-key.asc
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked --all-targets
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+  appimage:
+    needs: validate
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: x86_64
+          - target: aarch64-unknown-linux-gnu
+            arch: aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - name: Cross-build release binaries
+        run: cross build --locked --release --target "${{ matrix.target }}"
+      - name: Fetch the official AppImage packaging tool
+        shell: bash
+        run: |
+          curl --fail --location --output appimagetool.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          echo 'a6d71e2b6cd66f8e8d16c37ad164658985e0cf5fcaa950c90a482890cb9d13e0  appimagetool.AppImage' \
+            | sha256sum --check
+          chmod +x appimagetool.AppImage
+          ./appimagetool.AppImage --appimage-extract >/dev/null
+          mv squashfs-root appimagetool-root
+      - name: Import the AppImage signing key
+        env:
+          APPIMAGE_GPG_PRIVATE_KEY: ${{ secrets.APPIMAGE_GPG_PRIVATE_KEY }}
+        run: printf '%s' "$APPIMAGE_GPG_PRIVATE_KEY" | gpg --batch --import
+      - name: Build the signed, updateable AppImage
+        run: |
+          mkdir -p dist
+          packaging/appimage/build.sh "${{ matrix.target }}" "${{ matrix.arch }}" \
+            "${{ needs.validate.outputs.version }}" "$PWD/appimagetool-root/AppRun" "$PWD/dist"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qtools-appimage-${{ matrix.arch }}
+          path: dist/Qtools-${{ matrix.arch }}.AppImage*
+          if-no-files-found: error
+
+  publish:
+    needs: [validate, appimage]
+    runs-on: ubuntu-22.04
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: qtools-appimage-*
+          path: repo
+          merge-multiple: true
+      - name: Generate and sign checksums
+        working-directory: repo
+        env:
+          APPIMAGE_GPG_PRIVATE_KEY: ${{ secrets.APPIMAGE_GPG_PRIVATE_KEY }}
+        run: |
+          printf '%s' "$APPIMAGE_GPG_PRIVATE_KEY" | gpg --batch --import
+          sha256sum Qtools-*.AppImage Qtools-*.AppImage.zsync > SHA256SUMS
+          gpg --batch --yes --armor --detach-sign SHA256SUMS
+          printf '{"version":"%s","tag":"v%s"}\n' \
+            "${{ needs.validate.outputs.version }}" "${{ needs.validate.outputs.version }}" > version.json
+          cp ../packaging/appimage/qtools-release-key.asc .
+      - name: Attach artifacts to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            repo/Qtools-*.AppImage
+            repo/Qtools-*.AppImage.zsync
+            repo/SHA256SUMS
+            repo/SHA256SUMS.asc
+            repo/version.json
+            repo/qtools-release-key.asc
+      - name: Publish the stable AppImage channel to Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx -y wrangler pages deploy repo --project-name qtools-repo --branch production

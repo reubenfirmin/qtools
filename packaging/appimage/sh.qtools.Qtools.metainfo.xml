@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="console-application">
+  <id>sh.qtools.Qtools</id>
+  <name>Qtools</name>
+  <summary>Rich terminal reports for processes and disks</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>Qtools provides dq for disk accounting and pq for process and network diagnostics.</p>
+  </description>
+  <developer id="sh.qtools">
+    <name>qtools contributors</name>
+  </developer>
+  <provides>
+    <binary>dq</binary>
+    <binary>pq</binary>
+  </provides>
+  <content_rating type="oars-1.1" />
+  <url type="homepage">https://qtools.sh/</url>
+  <url type="vcs-browser">https://github.com/reubenfirmin/qtools</url>
+</component>

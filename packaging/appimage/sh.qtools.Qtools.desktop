@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Qtools
+Comment=Rich terminal reports for processes and disks
+Exec=qtools
+Icon=sh.qtools.Qtools
+Terminal=true
+Categories=System;

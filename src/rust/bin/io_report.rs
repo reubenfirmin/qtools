@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
 
-use qtools::style::{self, bold, dim, human_plain, paint};
+use qtools::{chart, donut, graphics};
+use qtools::render::{RenderContext, RenderTarget};
+use qtools::style::{self, bold, color_swatch, dim, human_plain, paint};
 use serde::Serialize;
 
 use crate::cluster;
@@ -40,6 +42,14 @@ pub struct IoOpts {
     pub compact_json: bool,
     pub sample_interval_ms: u64,
     pub colors: bool,
+}
+
+pub fn render<W: Write>(out: &mut W, clusters: &[IoCluster], opts: &IoOpts, context: RenderContext) -> io::Result<()> {
+    match context.target {
+        RenderTarget::Json | RenderTarget::JsonLines => write_json(out, clusters, opts),
+        RenderTarget::Graphics => write_graphics(out, clusters, opts),
+        RenderTarget::Text => write_text(out, clusters, opts),
+    }
 }
 
 pub fn snapshot(pids: impl Iterator<Item = i32>) -> IoSnapshot {
@@ -102,26 +112,68 @@ fn member_metric_value(m: &IoMember, metric: IoMetric) -> u64 {
 }
 
 pub fn write_text<W: Write>(out: &mut W, clusters: &[IoCluster], opts: &IoOpts) -> io::Result<()> {
+    write_header(out, opts)?;
+    write_rows(out, clusters, opts, false)
+}
+
+fn write_header<W: Write>(out: &mut W, opts: &IoOpts) -> io::Result<()> {
     writeln!(out, "{}  {}  process I/O  {}  {} ms sample", bold("pq", opts.colors),
         dim("|", opts.colors), dim("|", opts.colors), opts.sample_interval_ms)?;
     writeln!(out, "{}", dim("----------------------------------------------------", opts.colors))?;
-    writeln!(out, "{}", dim(&format!("{:>10}  {:>10}  {:>10}  {:>5}  process", "read/s", "write/s", "total/s", "procs"), opts.colors))?;
+    Ok(())
+}
+
+fn write_rows<W: Write>(out: &mut W, clusters: &[IoCluster], opts: &IoOpts, swatches: bool) -> io::Result<()> {
+    let prefix = if swatches { "    " } else { "" };
+    writeln!(out, "{}", dim(&format!("{}{:>10}  {:>10}  {:>10}  {:>5}  {:<12}  process",
+        prefix, "read/s", "write/s", "total/s", "procs", "activity"), opts.colors))?;
     if clusters.is_empty() {
         writeln!(out, "{}", dim("no process I/O observed during this sample", opts.colors))?;
         return Ok(());
     }
-    for c in clusters.iter().take(opts.top) {
-        writeln!(out, "{}  {}  {}  {:>5}  {}",
+    let shown: Vec<&IoCluster> = clusters.iter().take(opts.top).collect();
+    let largest = shown.iter().map(|c| metric_value(c, opts.metric)).max().unwrap_or(0);
+    for (rank, c) in shown.into_iter().enumerate() {
+        if swatches {
+            let color = style::PALETTE.get(rank).copied().unwrap_or(style::OTHER_COLOR);
+            write!(out, "{}  ", color_swatch(color, opts.colors))?;
+        }
+        let value = metric_value(c, opts.metric);
+        let fill = if largest > 0 { chart::bar_fill(value as f64 / largest as f64, chart::BAR_WIDTH) } else { 0 };
+        let bar = format!("{}{}", "#".repeat(fill), ".".repeat(chart::BAR_WIDTH - fill));
+        writeln!(out, "{}  {}  {}  {:>5}  {}  {}",
             rate_cell(c.read_bps, opts.colors), rate_cell(c.write_bps, opts.colors),
-            rate_cell(c.read_bps + c.write_bps, opts.colors), c.members.len(), c.identity)?;
+            rate_cell(c.read_bps + c.write_bps, opts.colors), c.members.len(), dim(&bar, opts.colors), c.identity)?;
         if opts.verbose {
             for m in &c.members {
-                writeln!(out, "  {:>8}  {:>10}  {:>10}  pid {}  {}",
-                    "", rate_text(m.read_bps), rate_text(m.write_bps), m.pid, m.cmd)?;
+                writeln!(out, "{}  {:>8}  {:>10}  {:>10}  pid {}  {}",
+                    prefix, "", rate_text(m.read_bps), rate_text(m.write_bps), m.pid, m.cmd)?;
             }
         }
     }
     Ok(())
+}
+
+pub fn write_graphics<W: Write>(out: &mut W, clusters: &[IoCluster], opts: &IoOpts) -> io::Result<()> {
+    write_header(out, opts)?;
+    if clusters.is_empty() {
+        return write_rows(out, clusters, opts, false);
+    }
+    let items: Vec<(String, u64)> = clusters.iter().map(|c| (c.identity.clone(), metric_value(c, opts.metric))).collect();
+    let total: u64 = items.iter().map(|(_, value)| *value).sum();
+    if total == 0 {
+        return write_rows(out, clusters, opts, false);
+    }
+    let segments = chart::segments(&items, total, opts.top.min(style::PALETTE.len()));
+    let image = donut::build_donut_image(&chart::slices(&segments), chart::DONUT_PX);
+    let cols = 40u32;
+    let config = viuer::Config { absolute_offset: false, width: Some(cols), height: Some(cols / 2), ..Default::default() };
+    out.flush()?;
+    if let Err(error) = viuer::print(&image, &config) {
+        graphics::debug_print_failure(&error);
+        return write_rows(out, clusters, opts, false);
+    }
+    write_rows(out, clusters, opts, true)
 }
 
 fn rate_text(bytes: u64) -> String { format!("{}/s", human_plain(bytes)) }
@@ -187,5 +239,20 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["mode"], "io");
         assert_eq!(value["clusters"][0]["total_bytes_per_sec"], 30);
+    }
+
+    #[test]
+    fn text_report_has_proportional_activity_bars() {
+        let clusters = vec![
+            IoCluster { identity: "busy".into(), read_bps: 100, write_bps: 100, read_total: 0, write_total: 0, members: vec![] },
+            IoCluster { identity: "quiet".into(), read_bps: 25, write_bps: 25, read_total: 0, write_total: 0, members: vec![] },
+        ];
+        let opts = IoOpts { metric: IoMetric::Combined, top: 15, verbose: false,
+            compact_json: false, sample_interval_ms: 400, colors: false };
+        let mut out = Vec::new();
+        write_text(&mut out, &clusters, &opts).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("####################"));
+        assert!(text.contains("#####..............."));
     }
 }

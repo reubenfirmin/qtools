@@ -7,6 +7,7 @@ use std::io::{self, Write};
 
 use qtools::style::{self, bold, dim, human_plain, paint};
 use qtools::{chart, donut, graphics};
+use qtools::render::{RenderContext, RenderTarget};
 use serde::Serialize;
 
 use crate::cluster::{metric_ordering, Cluster, Metric};
@@ -20,6 +21,20 @@ pub struct ReportOpts {
     pub width: Option<usize>,
     pub compact_json: bool,
     pub sample_interval_ms: u64
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render<W: Write>(out: &mut W, clusters: &[Cluster], mem_used: u64, mem_total: u64,
+    swap_used: u64, swap_total: u64, cpu_total: f64, core_loads: &[f64],
+    attribution: &[Vec<(i32, f64)>], opts: &ReportOpts, context: RenderContext) -> io::Result<()> {
+    match context.target {
+        RenderTarget::Json | RenderTarget::JsonLines =>
+            write_json(out, clusters, mem_used, mem_total, swap_used, swap_total, cpu_total, opts),
+        RenderTarget::Graphics =>
+            write_graphics(out, clusters, mem_used, mem_total, swap_used, swap_total, cpu_total, core_loads, attribution, opts),
+        RenderTarget::Text =>
+            write_text(out, clusters, mem_used, mem_total, swap_used, swap_total, cpu_total, opts),
+    }
 }
 
 use chart::{BAR_WIDTH, DONUT_PX, MIN_LABEL_WIDTH, RULE_WIDTH};

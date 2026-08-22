@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{self, BufWriter, Write};
+use std::io::{self, Write};
 
 use qtools::{chart, donut, graphics, style};
 use serde::Serialize;
@@ -43,19 +43,9 @@ pub fn human_size(size: u64) -> String {
  * Output a report of directory sizes, largest first. Writing is buffered and a broken pipe
  * (e.g. piping into `head` or quitting `less` early) exits quietly instead of panicking.
  */
-pub fn report(dir: String, results: HashMap<String, u64>, loose_files: Vec<(String, u64)>, options: FormatOptions) {
-    // Own a fresh stdout handle (not a held lock) so the graphics renderer can call viuer::print,
-    // which locks stdout itself; a held StdoutLock would deadlock it.
-    let mut out = BufWriter::new(io::stdout());
-
-    match write_report(&mut out, &dir, &results, &loose_files, &options).and_then(|_| out.flush()) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
-        Err(e) => {
-            eprintln!("dq: error writing output: {}", e);
-            std::process::exit(1);
-        }
-    }
+pub fn render<W: Write>(out: &mut W, dir: &str, results: &HashMap<String, u64>,
+    loose_files: &[(String, u64)], options: &FormatOptions) -> io::Result<()> {
+    write_report(out, dir, results, loose_files, options)
 }
 
 fn write_report<W: Write>(out: &mut W, dir: &str, results: &HashMap<String, u64>, loose_files: &[(String, u64)], options: &FormatOptions) -> io::Result<()> {

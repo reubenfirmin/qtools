@@ -19,6 +19,7 @@ use serde::Serialize;
 
 use qtools::style::{self, bold, dim, human_plain, paint};
 use qtools::{chart, donut, graphics};
+use qtools::render::{RenderContext, RenderTarget};
 
 use crate::kill;
 use crate::net;
@@ -38,6 +39,24 @@ pub struct NetOpts {
     pub compact_json: bool,
     pub sample_interval_ms: u64,
     pub names: DisplayNames
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render<W: Write>(out: &mut W, report: &net::NetReport, procs: &[proc::Proc], mem_used: u64,
+    mem_total: u64, opts: &NetOpts, context: RenderContext, detail: bool) -> io::Result<()> {
+    match context.target {
+        RenderTarget::Json | RenderTarget::JsonLines => write_json(out, report, mem_used, mem_total, opts),
+        RenderTarget::Graphics => if detail {
+            write_net_detail(out, report, procs, mem_used, mem_total, opts)
+        } else {
+            write_graphics(out, report, mem_used, mem_total, opts)
+        },
+        RenderTarget::Text => if detail {
+            write_net_detail(out, report, procs, mem_used, mem_total, opts)
+        } else {
+            write_text(out, report, mem_used, mem_total, opts)
+        },
+    }
 }
 
 #[derive(Default)]

@@ -14,6 +14,8 @@ pub struct ProcessSelection {
     pub pid: Option<i32>,
     pub min_cpu: Option<f64>,
     pub min_memory: Option<u64>,
+    pub mount: Option<String>,
+    pub file: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -28,6 +30,7 @@ pub struct SocketSelection {
     pub public_only: bool,
     pub services: bool,
     pub resolve: bool,
+    pub unix_path: Option<String>,
 }
 
 impl SocketSelection {
@@ -39,7 +42,7 @@ impl SocketSelection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum View { Processes, Network, Io }
+pub enum View { Processes, Network, Io, Deleted, Fds, Holders, Blocked, Pss, Unix }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoMetric { Combined, Read, Write }
@@ -76,7 +79,7 @@ impl QueryPlan {
             || args.tcp || args.udp || args.state.is_some() || args.public_only || args.services || args.resolve;
         let sockets = SocketSelection {
             network_requested: socket_selection_requested,
-            owner_selection_requested: args.net || args.port.is_some() || args.listen || args.remote_port.is_some()
+            owner_selection_requested: args.port.is_some() || args.listen || args.remote_port.is_some()
                 || args.tcp || args.udp || args.state.is_some() || args.public_only,
             local_port: args.port,
             remote_port: args.remote_port,
@@ -89,10 +92,12 @@ impl QueryPlan {
             public_only: args.public_only,
             services: args.services,
             resolve: args.resolve,
+            unix_path: args.unix.as_ref().and_then(|path| (!path.is_empty()).then(|| path.clone())),
         };
         let process = ProcessSelection {
             pattern: args.pattern.clone(), user: args.user.clone(), pid: args.pid,
             min_cpu: args.min_cpu, min_memory: args.min_memory,
+            mount: args.mount.clone(), file: args.file.clone(),
         };
         let output = OutputOptions {
             format: if args.jsonl { OutputFormat::JsonLines } else if args.json { OutputFormat::Json } else { OutputFormat::Rich },
@@ -114,7 +119,17 @@ impl QueryPlan {
         };
         let metric = if args.swap { Metric::Swap } else if args.memory { Metric::Memory } else { Metric::Cpu };
         let io_metric = if args.read { IoMetric::Read } else if args.write { IoMetric::Write } else { IoMetric::Combined };
+        let explicit = [args.io || args.read || args.write, args.deleted, args.fds, args.blocked, args.pss, args.unix.is_some()];
+        if explicit.into_iter().filter(|active| *active).count() > 1 {
+            return Err("choose only one report view (--io/--read/--write, --deleted, --fds, --blocked, --pss, or --unix)".into());
+        }
         let view = if args.io || args.read || args.write { View::Io }
+            else if args.deleted { View::Deleted }
+            else if args.fds { View::Fds }
+            else if args.blocked { View::Blocked }
+            else if args.pss { View::Pss }
+            else if args.unix.is_some() { View::Unix }
+            else if args.mount.is_some() || args.file.is_some() { View::Holders }
             else if socket_selection_requested { View::Network } else { View::Processes };
         Ok(Self { process, sockets, view, action, output, metric, io_metric, interval_ms: args.interval })
     }
@@ -166,5 +181,18 @@ mod tests {
         let p = plan(&["pq", "--remote-port", "443", "--write"]);
         assert_eq!(p.view, View::Io);
         assert_eq!(p.io_metric, IoMetric::Write);
+    }
+
+    #[test]
+    fn diagnostic_views_and_path_selectors_plan_cleanly() {
+        assert_eq!(plan(&["pq", "--deleted"]).view, View::Deleted);
+        assert_eq!(plan(&["pq", "--fds"]).view, View::Fds);
+        assert_eq!(plan(&["pq", "--blocked"]).view, View::Blocked);
+        assert_eq!(plan(&["pq", "--pss"]).view, View::Pss);
+        assert_eq!(plan(&["pq", "--unix"]).view, View::Unix);
+        let p = plan(&["pq", "--mount", "/mnt/data", "--fds"]);
+        assert_eq!(p.view, View::Fds);
+        assert_eq!(p.process.mount.as_deref(), Some("/mnt/data"));
+        assert!(QueryPlan::from_args(&Args::try_parse_from(["pq", "--fds", "--pss"]).unwrap()).is_err());
     }
 }

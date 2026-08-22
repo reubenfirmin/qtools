@@ -1,8 +1,8 @@
 mod view;
 mod progress;
 mod dq_query;
-use qtools::term;
 use qtools::help::{self, Request, Topic};
+use qtools::render::{self, RenderContext, RenderTarget};
 
 use std::error::Error;
 use std::fs;
@@ -14,7 +14,7 @@ use std::sync::mpsc::Sender;
 use std::os::unix::fs::MetadataExt;
 use threadpool::ThreadPool;
 use clap::Parser;
-use crate::view::report;
+use crate::view::render as render_report;
 use crate::view::FormatOptions;
 use crate::progress::Progress;
 use dq_query::DiskQuery;
@@ -145,7 +145,7 @@ fn main() {
     // A one-line usage hint on stderr, so it's visible on every human run without ever landing in
     // stdout (pipes, redirects, JSON stay clean). Dimmed when stderr is a terminal.
     if !plan.output.machine() {
-        let usage = "usage: dq [OPTIONS] [DIR]   (--help for all options)";
+        let usage = "usage: dq [OPTIONS] [DIR]   (dq --help; dq help scan)";
         if std::io::stderr().is_terminal() {
             eprintln!("\x1B[2m{}\x1B[0m", usage);
         } else {
@@ -155,27 +155,24 @@ fn main() {
 
     // Colors and path truncation are only meaningful on an interactive terminal; when piped or
     // asked for JSON we emit plain, untruncated output that's easy to redirect or parse.
-    let interactive = std::io::stdout().is_terminal() && !plan.output.machine();
-
-    // Query the terminal for a graphics protocol (kitty / iTerm2 / sixel). Only when interactive,
-    // since detection writes escape queries and reads the replies. Falls back to text when absent.
-    let graphics = interactive && qtools::graphics::supported();
+    let context = RenderContext::detect(plan.output);
     if std::env::var_os("QTOOLS_DEBUG").is_some() {
-        eprintln!("dq[debug]: interactive={} graphics={}", interactive, graphics);
+        eprintln!("dq[debug]: colors={} target={:?}", context.colors, context.target);
     }
 
     // The files sitting directly in the scanned directory, so we can break down the "in this dir"
     // total into its biggest offenders when it's a meaningful chunk of the tree.
     let loose_files = list_direct_files(&dir);
 
-    report(dir, all_results, loose_files, FormatOptions {
-        json: plan.output.machine(),
+    let options = FormatOptions {
+        json: context.machine(),
         nosummary: plan.selection.include_all_nonempty,
         zeroes: plan.selection.include_zeroes,
-        colors: interactive,
-        width: if interactive { term::stdout_width() } else { None },
-        graphics
-    });
+        colors: context.colors,
+        width: context.width,
+        graphics: context.target == RenderTarget::Graphics
+    };
+    render::stdout("dq", |out| render_report(out, &dir, &all_results, &loose_files, &options));
 }
 
 fn show_help_and_exit() {

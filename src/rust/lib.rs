@@ -6,3 +6,4 @@ pub mod graphics;
 pub mod chart;
 pub mod help;
 pub mod output;
+pub mod render;

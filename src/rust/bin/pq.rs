@@ -1,14 +1,17 @@
 //! pq: query and cluster the processes eating your CPU/memory. Companion to dq, sharing the same
 //! rendering primitives (style/donut/term/graphics/chart) from the qtools library.
 mod proc; mod identity; mod cluster; mod report; mod kill; mod net; mod net_report; mod netdiag; mod pq_query; mod io_report;
+mod fd_report; mod blocked_report; mod pss_report; mod unix_report;
+mod ranked_report;
 
 use std::collections::HashMap;
-use std::io::{self, BufWriter, IsTerminal, Write};
+use std::io::{self, Write};
 use std::time::Duration;
 
 use clap::{Parser, ValueEnum};
-use qtools::{graphics, style, term};
+use qtools::style;
 use qtools::help::{self, Request, Topic};
+use qtools::render::{self, RenderContext};
 
 use pq_query::{Action, KillOptions, ProcessSelection, QueryPlan, View};
 
@@ -27,9 +30,7 @@ pq — query what is using your machine
 
 Usage:
   pq [PATTERN]               CPU/memory report
-  pq --io [PATTERN]          Process read/write activity
   pq --net [PATTERN]         Network report
-  pq --port PORT             Inspect a local port
   pq --kill PATTERN          Stop matching process trees
 
 Common options:
@@ -40,12 +41,11 @@ Common options:
       --json                 Pretty machine-readable output
 
 Focused help:
-  pq help process            Reports and metrics
-  pq help io                 Process read/write activity
-  pq help net                Connections and ports
-  pq help filters            User, PID, and thresholds
-  pq help kill               Safe process termination
-  pq help output             JSON, JSONL, and plain output
+  pq help process | io       Resource reports
+  pq help files | blocked | pss
+                             Process internals
+  pq help net | filters      Connections and selection
+  pq help kill | output      Actions and machine output
 
 Tip: pq --net --help and pq --kill --help open the matching topic.";
 
@@ -111,6 +111,57 @@ Options:
 
 Values come from /proc/PID/io. They describe process I/O requests; caching means they are not
 necessarily physical device throughput. All ordinary process and socket filters compose.";
+
+const HELP_FILES: &str = "\
+pq files and descriptors
+
+Examples:
+  pq --deleted               Deleted files still consuming space
+  pq --fds                   Descriptor counts by process
+  pq --mount /mnt/data       Why a filesystem is busy
+  pq --file /var/log/app.log Who holds a path
+  pq --mount /mnt/data --fds FD usage among processes holding that mount
+
+Options:
+      --deleted              Rank identities by deleted open-file bytes
+      --fds                  Rank identities by open descriptor count
+      --mount PATH           Select paths beneath a mount/directory
+      --file PATH            Select one exact path
+  -v, --verbose              Show descriptors or individual hold reasons
+
+Path selectors examine open descriptors, cwd, root, executable, and mapped files.";
+
+const HELP_BLOCKED: &str = "\
+pq blocked processes
+
+Examples:
+  pq --blocked
+  pq --blocked -v
+  pq --user postgres --blocked
+
+Shows tasks in uninterruptible D state and their kernel wait channel from /proc/PID/wchan.";
+
+const HELP_PSS: &str = "\
+pq proportional memory
+
+Examples:
+  pq --pss chrome
+  pq --pid 1234 --pss
+  pq --port 5432 --pss
+
+Reads /proc/PID/smaps_rollup and reports PSS plus private/shared/anonymous memory. This is explicit
+because it is more expensive and permission-sensitive than the default RSS report.";
+
+const HELP_UNIX: &str = "\
+pq Unix-domain sockets
+
+Examples:
+  pq --unix
+  pq --unix /run/docker.sock
+  pq --net --unix
+  pq --user root --unix
+
+Joins /proc/net/unix socket inodes to owning processes. An optional value filters socket paths.";
 
 const HELP_NET: &str = "\
 pq network queries
@@ -179,6 +230,10 @@ JSON includes generated_at_unix_ms and sample_interval_ms.";
 static HELP_TOPICS: &[Topic] = &[
     Topic { name: "process", aliases: &["proc", "metrics"], text: HELP_PROCESS },
     Topic { name: "io", aliases: &["read", "write"], text: HELP_IO },
+    Topic { name: "files", aliases: &["fds", "deleted", "mount", "file"], text: HELP_FILES },
+    Topic { name: "blocked", aliases: &["wait", "stuck"], text: HELP_BLOCKED },
+    Topic { name: "pss", aliases: &["smaps"], text: HELP_PSS },
+    Topic { name: "unix", aliases: &["unix-sockets"], text: HELP_UNIX },
     Topic { name: "net", aliases: &["network", "ports"], text: HELP_NET },
     Topic { name: "filters", aliases: &["filter"], text: HELP_FILTERS },
     Topic { name: "kill", aliases: &["signal"], text: HELP_KILL },
@@ -188,6 +243,10 @@ static HELP_TOPICS: &[Topic] = &[
 static HELP_CONTEXTS: &[(&[&str], &str)] = &[
     (&["--kill", "--dry-run", "--signal", "--grace", "--sigkill", "-9"], "kill"),
     (&["--io", "--read", "--write"], "io"),
+    (&["--deleted", "--fds", "--mount", "--file"], "files"),
+    (&["--blocked"], "blocked"),
+    (&["--pss"], "pss"),
+    (&["--unix"], "unix"),
     (&["--net", "--port", "--listen", "--remote-port", "--tcp", "--udp", "--state", "--public", "--services", "--resolve"], "net"),
     (&["--user", "--pid", "--min-cpu", "--min-memory"], "filters"),
     (&["--json", "--jsonl", "--no-color"], "output"),
@@ -229,6 +288,20 @@ struct Args {
     #[arg(long, conflicts_with_all = ["io", "write"], help_heading = "Process I/O")] read: bool,
     /// Report process I/O sorted by write rate
     #[arg(long, conflicts_with_all = ["io", "read"], help_heading = "Process I/O")] write: bool,
+    /// Report deleted files still held open
+    #[arg(long, help_heading = "Files")] deleted: bool,
+    /// Report open file descriptor counts and classifications
+    #[arg(long, help_heading = "Files")] fds: bool,
+    /// Select processes holding paths beneath this mount/directory
+    #[arg(long, value_name = "PATH", help_heading = "Files")] mount: Option<String>,
+    /// Select processes holding this exact path
+    #[arg(long, value_name = "PATH", conflicts_with = "mount", help_heading = "Files")] file: Option<String>,
+    /// Report processes in uninterruptible D state
+    #[arg(long, help_heading = "Process internals")] blocked: bool,
+    /// Report proportional memory from smaps_rollup
+    #[arg(long, help_heading = "Process internals")] pss: bool,
+    /// Report Unix-domain sockets, optionally matching a socket path
+    #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "PATH", help_heading = "Net mode")] unix: Option<String>,
     /// Report TCP/UDP connections instead of cpu/mem clusters (sorted by traffic, then
     /// connection count; metric flags do not change the sort). World-exposed listeners are
     /// highlighted
@@ -284,6 +357,9 @@ fn main() {
         (Action::Kill(options), _) => { run_kill(options.pattern.as_deref().unwrap(), &plan, options); return; }
         (Action::Report, View::Network) => { run_net_report(&plan); return; }
         (Action::Report, View::Io) => { run_io_report(&plan); return; }
+        (Action::Report, View::Deleted | View::Fds | View::Holders | View::Blocked | View::Pss | View::Unix) => {
+            run_diagnostic_report(&plan); return;
+        }
         (Action::Report, View::Processes) => {}
     }
 
@@ -328,37 +404,18 @@ fn main() {
     let (swap_used, swap_total) = proc::swap_info();
 
     // Colors/width are only meaningful on an interactive terminal; JSON and piped output stay plain.
-    let interactive = std::io::stdout().is_terminal() && !plan.output.machine() && !plan.output.no_color;
-    // Graphics need an interactive terminal that also speaks a raster protocol; the capability probe
-    // is only worth running when we might actually use it.
-    let graphics = interactive && graphics::supported();
+    let context = RenderContext::detect(plan.output);
     let opts = report::ReportOpts {
         metric,
         top: plan.output.top.unwrap_or(15),
         verbose: plan.output.verbose,
-        colors: interactive,
-        width: if interactive { term::stdout_width() } else { None },
-        compact_json: plan.output.compact_json(),
+        colors: context.colors,
+        width: context.width,
+        compact_json: context.compact_json(),
         sample_interval_ms: plan.interval_ms
     };
-
-    let mut out = BufWriter::new(io::stdout());
-    let result = if plan.output.machine() {
-        report::write_json(&mut out, &clusters, mem_used, mem_total, swap_used, swap_total, cpu_total, &opts)
-    } else if graphics {
-        report::write_graphics(&mut out, &clusters, mem_used, mem_total, swap_used, swap_total, cpu_total, &core_loads, &attribution, &opts)
-    } else {
-        report::write_text(&mut out, &clusters, mem_used, mem_total, swap_used, swap_total, cpu_total, &opts)
-    }.and_then(|_| out.flush());
-
-    match result {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
-        Err(e) => {
-            eprintln!("pq: error writing output: {}", e);
-            std::process::exit(1);
-        }
-    }
+    render::stdout("pq", |out| report::render(out, &clusters, mem_used, mem_total, swap_used,
+        swap_total, cpu_total, &core_loads, &attribution, &opts, context));
 }
 
 fn show_help_and_exit() {
@@ -445,41 +502,22 @@ fn run_net_report(plan: &QueryPlan) {
         && plan.process.min_memory.is_none_or(|min| c.rss >= min));
 
     let (mem_used, mem_total) = proc::mem_info();
-    let interactive = std::io::stdout().is_terminal() && !plan.output.machine() && !plan.output.no_color;
-    let graphics = interactive && graphics::supported();
+    let context = RenderContext::detect(plan.output);
     let opts = net_report::NetOpts {
         // --listen means "show me what's serving": never cut a listener off by default.
         top: plan.output.top.unwrap_or(if plan.sockets.listen { usize::MAX } else { 15 }),
         verbose: plan.output.verbose,
-        colors: interactive,
-        width: if interactive { term::stdout_width() } else { None },
+        colors: context.colors,
+        width: context.width,
         port: plan.sockets.local_port,
-        compact_json: plan.output.compact_json(),
+        compact_json: context.compact_json(),
         sample_interval_ms: plan.interval_ms,
         names: net_report::display_names(&report, plan.sockets.services, plan.sockets.resolve)
     };
 
-    let mut out = BufWriter::new(io::stdout());
-    let result = if plan.output.machine() {
-        net_report::write_json(&mut out, &report, mem_used, mem_total, &opts)
-    } else if plan.sockets.local_port.is_some() || (plan.process.pattern.is_some() && !plan.output.verbose) {
-        // A targeted question (a port, or a named app): answer it with detail cards, not a
-        // donut. -v opts back into the raw per-connection grid.
-        net_report::write_net_detail(&mut out, &report, &procs, mem_used, mem_total, &opts)
-    } else if graphics {
-        net_report::write_graphics(&mut out, &report, mem_used, mem_total, &opts)
-    } else {
-        net_report::write_text(&mut out, &report, mem_used, mem_total, &opts)
-    }.and_then(|_| out.flush());
-
-    match result {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
-        Err(e) => {
-            eprintln!("pq: error writing output: {}", e);
-            std::process::exit(1);
-        }
-    }
+    let detail = plan.sockets.local_port.is_some() || (plan.process.pattern.is_some() && !plan.output.verbose);
+    render::stdout("pq", |out| net_report::render(out, &report, &procs, mem_used, mem_total,
+        &opts, context, detail));
 }
 
 /// Process-I/O report. Process selectors establish the base set; when socket selectors are
@@ -523,22 +561,77 @@ fn run_io_report(plan: &QueryPlan) {
     if !targeted {
         clusters.retain(|c| c.read_bps + c.write_bps > 0);
     }
+    let context = RenderContext::detect(plan.output);
     let opts = io_report::IoOpts {
         metric: plan.io_metric, top: plan.output.top.unwrap_or(15), verbose: plan.output.verbose,
-        compact_json: plan.output.compact_json(), sample_interval_ms: plan.interval_ms,
-        colors: std::io::stdout().is_terminal() && !plan.output.machine() && !plan.output.no_color,
+        compact_json: context.compact_json(), sample_interval_ms: plan.interval_ms,
+        colors: context.colors,
     };
-    let mut out = BufWriter::new(io::stdout());
-    let result = if plan.output.machine() {
-        io_report::write_json(&mut out, &clusters, &opts)
-    } else {
-        io_report::write_text(&mut out, &clusters, &opts)
-    }.and_then(|_| out.flush());
-    match result {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
-        Err(e) => { eprintln!("pq: error writing output: {e}"); std::process::exit(1); }
+    render::stdout("pq", |out| io_report::render(out, &clusters, &opts, context));
+}
+
+fn selected_process_pids(procs: &[proc::Proc], plan: &QueryPlan) -> std::collections::HashSet<i32> {
+    let selected: Vec<proc::Proc> = procs.iter().filter(|p| process_matches(p, &plan.process)).cloned().collect();
+    let mut groups = cluster::cluster(&selected, plan.metric);
+    if let Some(pattern) = &plan.process.pattern {
+        let needle = pattern.to_lowercase();
+        groups.retain(|c| c.identity.to_lowercase().contains(&needle)
+            || c.members.iter().any(|m| m.cmd.to_lowercase().contains(&needle) || m.comm.to_lowercase().contains(&needle)));
     }
+    groups.retain(|c| plan.process.min_cpu.is_none_or(|min| c.cpu >= min)
+        && plan.process.min_memory.is_none_or(|min| c.rss >= min));
+    groups.iter().flat_map(|c| c.members.iter().map(|m| m.pid)).collect()
+}
+
+fn intersect_socket_owners(procs: &[proc::Proc], plan: &QueryPlan, allowed: &mut std::collections::HashSet<i32>) {
+    if !plan.sockets.selects_owners() { return; }
+    let (attributed, tables_read) = sample_sockets(procs);
+    if tables_read == 0 {
+        eprintln!("pq: cannot read /proc/net for socket selection (is this Linux?)");
+        std::process::exit(1);
+    }
+    let sockets = net::filter_socks(select_sockets(attributed, plan), plan.sockets.local_port, plan.sockets.listen);
+    let owners: std::collections::HashSet<i32> = sockets.into_iter().filter_map(|(_, pid)| pid).collect();
+    allowed.retain(|pid| owners.contains(pid));
+}
+
+fn run_diagnostic_report(plan: &QueryPlan) {
+    let previous = proc::snapshot();
+    std::thread::sleep(Duration::from_millis(plan.interval_ms));
+    let current = proc::snapshot();
+    let procs = proc::cpu_percent(&previous, &current, plan.interval_ms as f64 / 1000.0);
+    let mut allowed = selected_process_pids(&procs, plan);
+    intersect_socket_owners(&procs, plan, &mut allowed);
+
+    let needs_files = matches!(plan.view, View::Deleted | View::Fds | View::Holders)
+        || plan.process.file.is_some() || plan.process.mount.is_some();
+    let include_special_paths = plan.process.file.is_some() || plan.process.mount.is_some() || plan.view == View::Holders;
+    let files = needs_files.then(|| fd_report::collect(&procs, include_special_paths));
+    let normalized_file = plan.process.file.as_deref().map(fd_report::normalize_query_path);
+    let normalized_mount = plan.process.mount.as_deref().map(fd_report::normalize_query_path);
+    if let Some(files) = &files {
+        if normalized_file.is_some() || normalized_mount.is_some() {
+            let holders = fd_report::matching_pids(files, normalized_file.as_deref(), normalized_mount.as_deref());
+            allowed.retain(|pid| holders.contains(pid));
+        }
+    }
+
+    let report = match plan.view {
+        View::Deleted => fd_report::deleted_report(files.as_ref().unwrap(), &allowed),
+        View::Fds => fd_report::fds_report(files.as_ref().unwrap(), &allowed),
+        View::Holders => fd_report::holders_report(files.as_ref().unwrap(), &allowed,
+            normalized_file.as_deref(), normalized_mount.as_deref()),
+        View::Blocked => blocked_report::build(&procs, &allowed),
+        View::Pss => pss_report::build(&procs, &allowed),
+        View::Unix => unix_report::build(&procs, &allowed, plan.sockets.unix_path.as_deref()),
+        _ => unreachable!("non-diagnostic view routed to diagnostic renderer"),
+    };
+    let context = RenderContext::detect(plan.output);
+    let show_details = plan.output.verbose || matches!(plan.view, View::Holders | View::Blocked)
+        || (plan.view == View::Unix && plan.sockets.unix_path.is_some());
+    let options = ranked_report::Options { top: plan.output.top.unwrap_or(15), verbose: show_details,
+        sample_interval_ms: Some(plan.interval_ms) };
+    render::stdout("pq", |out| report.render(out, &options, context));
 }
 
 /// Net-mode `--kill`: with --port, only an attributed LISTENING socket on that port selects (the

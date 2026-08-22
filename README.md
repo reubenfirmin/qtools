@@ -136,7 +136,40 @@ and `--write` select the same report sorted by that direction. Process and socke
     pq --io --json
 
 These are bytes accounted to process I/O by the kernel. Caching and delayed writeback mean they are
-not necessarily equal to instantaneous physical-device throughput.
+not necessarily equal to instantaneous physical-device throughput. Graphics-capable terminals get
+a throughput-share donut by default; other terminals get proportional activity bars, and pipes stay
+plain text.
+
+### pq process internals and open resources
+
+These views use the same process, socket-owner, user, PID, and path selectors as the other reports.
+Every standalone view uses the normal graphics/text/JSON rendering pipeline.
+
+    pq --deleted                 # deleted files still consuming disk space
+    pq --deleted -v              # show each held descriptor/path
+    pq --fds                     # descriptor counts and classifications
+    pq --blocked                 # tasks in uninterruptible D state + wchan
+    pq --pss chrome              # proportional/private/shared/anonymous memory
+    pq --file /var/log/app.log   # who holds, maps, executes, or uses this path
+    pq --mount /mnt/data         # what prevents this tree/filesystem being released
+    pq --mount /mnt/data --fds   # FD report restricted to those holders
+    pq --port 5432 --pss         # PSS restricted to owners of local port 5432
+
+`--deleted` measures the followed open file and deduplicates repeated references to the same
+device/inode within an identity. `--file` and `--mount` examine descriptors, cwd, root, executable,
+and file-backed mappings. `--pss` reads `smaps_rollup` only when explicitly requested because it is
+more expensive and permission-sensitive.
+
+### pq Unix-domain sockets
+
+    pq --unix
+    pq --unix /run/docker.sock
+    pq --net --unix
+    pq --user root --unix
+
+Unix sockets are read from `/proc/net/unix` and attributed through `/proc/PID/fd` socket inodes.
+Filesystem and abstract socket names are both retained; sockets that cannot be attributed are shown
+as such when the query is otherwise unfiltered.
 
 ### pq --port N --kill: free up a port
 

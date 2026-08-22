@@ -7,6 +7,7 @@ use std::io::{self, Write};
 
 use qtools::style::{self, bold, dim, human_plain, paint};
 use qtools::{chart, donut, graphics};
+use serde::Serialize;
 
 use crate::cluster::{metric_ordering, Cluster, Metric};
 
@@ -489,39 +490,26 @@ fn write_two_tier_row<W: Write>(out: &mut W, color: (u8, u8, u8), rss: u64, swap
 /// top-N clusters, each with its members (pid, cpu, mem, swap, cmd).
 #[allow(clippy::too_many_arguments)]
 pub fn write_json<W: Write>(out: &mut W, clusters: &[Cluster], mem_used: u64, mem_total: u64, swap_used: u64, swap_total: u64, cpu_total: f64, opts: &ReportOpts) -> io::Result<()> {
-    writeln!(out, "{{")?;
-    writeln!(out, "  \"cpu_total\": {},", round2(cpu_total))?;
-    writeln!(out, "  \"mem_used\": {},", mem_used)?;
-    writeln!(out, "  \"mem_total\": {},", mem_total)?;
-    writeln!(out, "  \"swap_used\": {},", swap_used)?;
-    writeln!(out, "  \"swap_total\": {},", swap_total)?;
-    writeln!(out, "  \"clusters\": [")?;
-
-    let top: Vec<&Cluster> = clusters.iter().take(opts.top).collect();
-    for (i, c) in top.iter().enumerate() {
-        writeln!(out, "    {{")?;
-        writeln!(out, "      \"identity\": \"{}\",", style::json_escape(&c.identity))?;
-        writeln!(out, "      \"cpu\": {},", round2(c.cpu))?;
-        writeln!(out, "      \"mem\": {},", c.rss)?;
-        writeln!(out, "      \"swap\": {},", c.swap)?;
-        writeln!(out, "      \"count\": {},", c.members.len())?;
-        writeln!(out, "      \"members\": [")?;
-        for (j, m) in c.members.iter().enumerate() {
-            write!(
-                out,
-                "        {{\"pid\": {}, \"cpu\": {}, \"mem\": {}, \"swap\": {}, \"cmd\": \"{}\"}}",
-                m.pid, round2(m.cpu), m.rss, m.swap, style::json_escape(&m.cmd)
-            )?;
-            writeln!(out, "{}", if j + 1 < c.members.len() { "," } else { "" })?;
-        }
-        writeln!(out, "      ]")?;
-        write!(out, "    }}")?;
-        writeln!(out, "{}", if i + 1 < top.len() { "," } else { "" })?;
+    #[derive(Serialize)]
+    struct JsonMember<'a> { pid: i32, cpu: f64, mem: u64, swap: u64, cmd: &'a str }
+    #[derive(Serialize)]
+    struct JsonCluster<'a> { identity: &'a str, cpu: f64, mem: u64, swap: u64, count: usize, members: Vec<JsonMember<'a>> }
+    #[derive(Serialize)]
+    struct JsonReport<'a> {
+        cpu_total: f64, mem_used: u64, mem_total: u64, swap_used: u64, swap_total: u64,
+        clusters: Vec<JsonCluster<'a>>
     }
 
-    writeln!(out, "  ]")?;
-    writeln!(out, "}}")?;
-    Ok(())
+    let clusters = clusters.iter().take(opts.top).map(|c| JsonCluster {
+        identity: &c.identity, cpu: round2(c.cpu), mem: c.rss, swap: c.swap,
+        count: c.members.len(),
+        members: c.members.iter().map(|m| JsonMember {
+            pid: m.pid, cpu: round2(m.cpu), mem: m.rss, swap: m.swap, cmd: &m.cmd
+        }).collect()
+    }).collect();
+    let report = JsonReport { cpu_total: round2(cpu_total), mem_used, mem_total, swap_used, swap_total, clusters };
+    serde_json::to_writer_pretty(&mut *out, &report).map_err(io::Error::other)?;
+    writeln!(out)
 }
 
 fn round2(v: f64) -> f64 {

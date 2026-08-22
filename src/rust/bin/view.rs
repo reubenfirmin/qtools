@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::io::{self, BufWriter, Write};
 
 use qtools::{chart, donut, graphics, style};
+use serde::Serialize;
 
 use donut::{build_donut_image, build_two_donut_image};
-use style::{bold, color_swatch, dim, human_plain, json_escape, magnitude_color, pad_visible, paint, size_text, truncate_middle};
+use style::{bold, color_swatch, dim, human_plain, magnitude_color, pad_visible, paint, size_text, truncate_middle};
 
 pub struct FormatOptions {
     pub json: bool,
@@ -338,36 +339,26 @@ fn write_entry(out: &mut dyn Write, label: &str, size: u64, total: u64, largest:
 // -------------------------------------------------------------------------------------------------
 
 fn write_json<W: Write>(out: &mut W, dir: &str, loose: u64, full_size: u64, rows: &[(&String, u64)], loose_files: &[(String, u64)], options: &FormatOptions) -> io::Result<()> {
-    writeln!(out, "{{")?;
-    writeln!(out, "  \"path\": \"{}\",", json_escape(dir))?;
-    writeln!(out, "  \"total\": {},", full_size)?;
-    writeln!(out, "  \"loose\": {},", loose)?;
-
-    write_json_array(out, "entries", "path", rows.iter().map(|(p, s)| (p.as_str(), *s)), full_size, options)?;
-    writeln!(out, ",")?;
-    write_json_array(out, "in_this_dir", "name", loose_files.iter().map(|(n, s)| (n.as_str(), *s)), loose, options)?;
-    writeln!(out)?;
-
-    writeln!(out, "}}")?;
-    Ok(())
-}
-
-/// Write one `"key": [ {label_key, bytes, percent}, ... ]` array (no trailing newline).
-fn write_json_array<'a, W: Write>(out: &mut W, key: &str, label_key: &str, items: impl Iterator<Item = (&'a str, u64)>, total: u64, options: &FormatOptions) -> io::Result<()> {
-    write!(out, "  \"{}\": [", key)?;
-    let mut first = true;
-    for (label, size) in items {
-        if !options.zeroes && size == 0 {
-            continue;
-        }
-        write!(out, "{}", if first { "\n" } else { ",\n" })?;
-        write!(out, "    {{\"{}\": \"{}\", \"bytes\": {}, \"percent\": {}}}", label_key, json_escape(label), size, percent(size, total))?;
-        first = false;
+    #[derive(Serialize)]
+    struct Entry<'a> { path: &'a str, bytes: u64, percent: f64 }
+    #[derive(Serialize)]
+    struct DirectFile<'a> { name: &'a str, bytes: u64, percent: f64 }
+    #[derive(Serialize)]
+    struct DiskReport<'a> {
+        path: &'a str, total: u64, loose: u64,
+        entries: Vec<Entry<'a>>,
+        in_this_dir: Vec<DirectFile<'a>>
     }
-    if !first {
-        write!(out, "\n  ")?;
-    }
-    write!(out, "]")
+
+    let entries = rows.iter().filter(|(_, size)| options.zeroes || *size != 0).map(|(path, size)| Entry {
+        path, bytes: *size, percent: percent(*size, full_size)
+    }).collect();
+    let in_this_dir = loose_files.iter().filter(|(_, size)| options.zeroes || *size != 0).map(|(name, size)| DirectFile {
+        name, bytes: *size, percent: percent(*size, loose)
+    }).collect();
+    let report = DiskReport { path: dir, total: full_size, loose, entries, in_this_dir };
+    serde_json::to_writer_pretty(&mut *out, &report).map_err(io::Error::other)?;
+    writeln!(out)
 }
 
 fn percent(size: u64, total: u64) -> f64 {

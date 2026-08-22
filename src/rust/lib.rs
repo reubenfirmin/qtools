@@ -4,3 +4,5 @@ pub mod donut;
 pub mod term;
 pub mod graphics;
 pub mod chart;
+pub mod help;
+pub mod output;

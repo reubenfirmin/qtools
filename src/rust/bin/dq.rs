@@ -1,6 +1,8 @@
 mod view;
 mod progress;
+mod dq_query;
 use qtools::term;
+use qtools::help::{self, Request, Topic};
 
 use std::error::Error;
 use std::fs;
@@ -15,6 +17,73 @@ use clap::Parser;
 use crate::view::report;
 use crate::view::FormatOptions;
 use crate::progress::Progress;
+use dq_query::DiskQuery;
+
+const HELP: &str = "\
+dq — query what is using your disk
+
+Usage:
+  dq [DIR]                   Scan a directory (default: current directory)
+
+Common options:
+  -v, --nosummary            Show every non-empty directory
+  -V, --zeroes               Also show empty directories
+  -t, --threads N            Worker threads (default 50)
+      --json                 Machine-readable output
+
+Focused help:
+  dq help scan               Traversal, detail, and progress
+  dq help output             Human and JSON output
+
+Examples:
+  dq
+  dq /var
+  dq -v --threads 100 /tmp
+  dq --json /var > sizes.json";
+
+const HELP_SCAN: &str = "\
+dq scanning
+
+Examples:
+  dq .                       Scan the current directory
+  dq /var                    Scan /var
+  dq -v /var                 Show every non-empty directory
+  dq -V /tmp                 Include zero-size directories
+  dq --threads 100 /data     Increase traversal concurrency
+  dq --noprogress /var       Suppress the progress indicator
+
+Options:
+  -t, --threads N            Worker threads (default 50)
+  -v, --nosummary            Disable the normal 1% summary cutoff
+  -V, --zeroes               Include empty directories
+      --noprogress           Disable progress
+
+dq stays on the starting filesystem and skips symlinks, /proc, and /sys.";
+
+const HELP_OUTPUT: &str = "\
+dq output
+
+Examples:
+  dq /var                    Rich terminal report, plain text when piped
+  dq --json /var             Machine-readable JSON
+  dq --json /var | jq .entries
+
+Options:
+      --json                 Emit JSON instead of the human report
+  -v, --nosummary            Include every non-empty directory
+  -V, --zeroes               Also include zero-size entries
+
+Colors and graphics are automatically disabled when stdout is redirected.";
+
+static HELP_TOPICS: &[Topic] = &[
+    Topic { name: "scan", aliases: &["scanning", "walk"], text: HELP_SCAN },
+    Topic { name: "output", aliases: &["json"], text: HELP_OUTPUT },
+];
+
+static HELP_CONTEXTS: &[(&[&str], &str)] = &[
+    (&["--json"], "output"),
+    (&["--threads", "-t", "--nosummary", "-v", "--zeroes", "-V", "--noprogress"], "scan"),
+];
 
 // A smarter, faster alternative to du.
 #[derive(Parser, Debug)]
@@ -46,8 +115,13 @@ struct Args {
 }
 
 fn main() {
+    show_help_and_exit();
     let args = Args::parse();
-    let dir = args.dir;
+    let plan = DiskQuery::from_args(&args);
+    let dir = plan.root.clone();
+    debug_assert!(plan.traversal.one_file_system && !plan.traversal.follow_links);
+    debug_assert_eq!(plan.accounting, dq_query::SizeAccounting::Apparent);
+    debug_assert_eq!(plan.view, dq_query::DiskView::Summary);
 
     let metadata = match fs::metadata(&dir) {
         Ok(metadata) => metadata,
@@ -61,7 +135,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    let all_results = scan_path(&dir, args.threads.max(1) as usize, metadata.dev(), HashSet::from([Path::new("/proc"), Path::new("/sys")]), !args.noprogress);
+    let all_results = scan_path(&dir, plan.traversal.threads, metadata.dev(), HashSet::from([Path::new("/proc"), Path::new("/sys")]), plan.traversal.show_progress);
 
     if !all_results.contains_key(&dir) {
         eprintln!("dq: could not read '{}' (permission denied?)", dir);
@@ -70,7 +144,7 @@ fn main() {
 
     // A one-line usage hint on stderr, so it's visible on every human run without ever landing in
     // stdout (pipes, redirects, JSON stay clean). Dimmed when stderr is a terminal.
-    if !args.json {
+    if !plan.output.machine() {
         let usage = "usage: dq [OPTIONS] [DIR]   (--help for all options)";
         if std::io::stderr().is_terminal() {
             eprintln!("\x1B[2m{}\x1B[0m", usage);
@@ -81,7 +155,7 @@ fn main() {
 
     // Colors and path truncation are only meaningful on an interactive terminal; when piped or
     // asked for JSON we emit plain, untruncated output that's easy to redirect or parse.
-    let interactive = std::io::stdout().is_terminal() && !args.json;
+    let interactive = std::io::stdout().is_terminal() && !plan.output.machine();
 
     // Query the terminal for a graphics protocol (kitty / iTerm2 / sixel). Only when interactive,
     // since detection writes escape queries and reads the replies. Falls back to text when absent.
@@ -95,13 +169,25 @@ fn main() {
     let loose_files = list_direct_files(&dir);
 
     report(dir, all_results, loose_files, FormatOptions {
-        json: args.json,
-        nosummary: args.nosummary,
-        zeroes: args.zeroes,
+        json: plan.output.machine(),
+        nosummary: plan.selection.include_all_nonempty,
+        zeroes: plan.selection.include_zeroes,
         colors: interactive,
         width: if interactive { term::stdout_width() } else { None },
         graphics
     });
+}
+
+fn show_help_and_exit() {
+    let args: Vec<String> = std::env::args().collect();
+    match help::route(&args, HELP, HELP_TOPICS, HELP_CONTEXTS) {
+        Request::None => {}
+        Request::Show(text) => { println!("{}", text); std::process::exit(0); }
+        Request::Unknown(topic) => {
+            eprintln!("dq: unknown help topic '{topic}'\navailable topics: {}", help::topic_names(HELP_TOPICS));
+            std::process::exit(2);
+        }
+    }
 }
 
 /**

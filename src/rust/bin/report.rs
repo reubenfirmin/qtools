@@ -17,7 +17,9 @@ pub struct ReportOpts {
     pub top: usize,
     pub verbose: bool,
     pub colors: bool,
-    pub width: Option<usize>
+    pub width: Option<usize>,
+    pub compact_json: bool,
+    pub sample_interval_ms: u64
 }
 
 use chart::{BAR_WIDTH, DONUT_PX, MIN_LABEL_WIDTH, RULE_WIDTH};
@@ -496,6 +498,7 @@ pub fn write_json<W: Write>(out: &mut W, clusters: &[Cluster], mem_used: u64, me
     struct JsonCluster<'a> { identity: &'a str, cpu: f64, mem: u64, swap: u64, count: usize, members: Vec<JsonMember<'a>> }
     #[derive(Serialize)]
     struct JsonReport<'a> {
+        generated_at_unix_ms: u128, sample_interval_ms: u64,
         cpu_total: f64, mem_used: u64, mem_total: u64, swap_used: u64, swap_total: u64,
         clusters: Vec<JsonCluster<'a>>
     }
@@ -507,8 +510,15 @@ pub fn write_json<W: Write>(out: &mut W, clusters: &[Cluster], mem_used: u64, me
             pid: m.pid, cpu: round2(m.cpu), mem: m.rss, swap: m.swap, cmd: &m.cmd
         }).collect()
     }).collect();
-    let report = JsonReport { cpu_total: round2(cpu_total), mem_used, mem_total, swap_used, swap_total, clusters };
-    serde_json::to_writer_pretty(&mut *out, &report).map_err(io::Error::other)?;
+    let generated_at_unix_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_millis();
+    let report = JsonReport { generated_at_unix_ms, sample_interval_ms: opts.sample_interval_ms,
+        cpu_total: round2(cpu_total), mem_used, mem_total, swap_used, swap_total, clusters };
+    if opts.compact_json {
+        serde_json::to_writer(&mut *out, &report).map_err(io::Error::other)?;
+    } else {
+        serde_json::to_writer_pretty(&mut *out, &report).map_err(io::Error::other)?;
+    }
     writeln!(out)
 }
 
@@ -522,7 +532,8 @@ mod tests {
     use crate::cluster::Member;
 
     fn opts() -> ReportOpts {
-        ReportOpts { metric: Metric::Cpu, top: 15, verbose: false, colors: false, width: None }
+        ReportOpts { metric: Metric::Cpu, top: 15, verbose: false, colors: false, width: None,
+            compact_json: false, sample_interval_ms: 400 }
     }
 
     #[test]
@@ -671,5 +682,20 @@ mod tests {
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("\"swap_used\": 2000000"));
         assert!(s.contains("\"swap\": 2000000"));
+    }
+
+    #[test]
+    fn compact_json_is_one_line_and_has_sample_metadata() {
+        let clusters = vec![Cluster { identity: "one".into(), cpu: 1.0, rss: 2, swap: 0, members: vec![] }];
+        let mut o = opts();
+        o.compact_json = true;
+        o.sample_interval_ms = 750;
+        let mut buf = Vec::new();
+        write_json(&mut buf, &clusters, 0, 1, 0, 0, 1.0, &o).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert_eq!(text.lines().count(), 1);
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["sample_interval_ms"], 750);
+        assert!(value["generated_at_unix_ms"].as_u64().is_some());
     }
 }

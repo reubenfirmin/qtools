@@ -12,6 +12,8 @@
 //! * JSON always includes everything (machines make their own UIs).
 
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
+use std::process::Command;
 use std::io::{self, Write};
 use serde::Serialize;
 
@@ -32,7 +34,55 @@ pub struct NetOpts {
     pub verbose: bool,
     pub colors: bool,
     pub width: Option<usize>,
-    pub port: Option<u16>
+    pub port: Option<u16>,
+    pub compact_json: bool,
+    pub sample_interval_ms: u64,
+    pub names: DisplayNames
+}
+
+#[derive(Default)]
+pub struct DisplayNames {
+    services: HashMap<u16, String>,
+    hosts: HashMap<IpAddr, String>
+}
+
+/// Resolve optional presentation-only names once per report. Numeric endpoints remain canonical
+/// in JSON and are always shown in text; names are annotations, never query inputs.
+pub fn display_names(r: &net::NetReport, services: bool, resolve: bool) -> DisplayNames {
+    let service_names = if services { read_services() } else { HashMap::new() };
+    let mut hosts = HashMap::new();
+    if resolve {
+        let ips: HashSet<IpAddr> = r.clusters.iter().flat_map(|c| c.conns.iter().map(|(s, _)| s.peer))
+            .chain(r.unattributed.iter().flat_map(|(_, socks)| socks.iter().map(|s| s.peer)))
+            .filter(|ip| !ip.is_unspecified()).collect();
+        for ip in ips {
+            if let Ok(output) = Command::new("getent").args(["hosts", &ip.to_string()]).output() {
+                if output.status.success() {
+                    if let Some(name) = String::from_utf8_lossy(&output.stdout).split_whitespace().nth(1) {
+                        hosts.insert(ip, name.trim_end_matches('.').to_string());
+                    }
+                }
+            }
+        }
+    }
+    DisplayNames { services: service_names, hosts }
+}
+
+fn read_services() -> HashMap<u16, String> {
+    let mut names = HashMap::new();
+    if let Ok(raw) = std::fs::read_to_string("/etc/services") {
+        for line in raw.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            let mut fields = line.split_whitespace();
+            let Some(name) = fields.next() else { continue };
+            let Some(port_proto) = fields.next() else { continue };
+            if let Some((port, _)) = port_proto.split_once('/') {
+                if let Ok(port) = port.parse() {
+                    names.entry(port).or_insert_with(|| name.to_string());
+                }
+            }
+        }
+    }
+    names
 }
 
 const CONNS_WIDTH: usize = 5;
@@ -108,14 +158,14 @@ fn write_body<W: Write>(out: &mut W, r: &net::NetReport, opts: &NetOpts, swatche
             &name,
             &c.listen_ports,
             &c.world_ports,
-            &outbound_summary(c.conns.iter().map(|(s, _)| s), &r.listen_port_set),
+            &outbound_summary(c.conns.iter().map(|(s, _)| s), &r.listen_port_set, &opts.names),
             row_prefix,
             opts
         )?;
         if opts.verbose {
             for (sock, pid) in &c.conns {
                 writeln!(out, "{}{:>cw$}  {}", indent, "",
-                    conn_line(sock, Some(*pid), &r.listen_port_set, &r.traffic, colors), cw = CONNS_WIDTH)?;
+                    conn_line(sock, Some(*pid), &r.listen_port_set, &r.traffic, &opts.names, colors), cw = CONNS_WIDTH)?;
             }
         }
     }
@@ -134,7 +184,7 @@ fn write_body<W: Write>(out: &mut W, r: &net::NetReport, opts: &NetOpts, swatche
             format!("+ {} more cluster(s), {} conns (raise -n to see them)", hidden.len(), hidden_conns)
         } else {
             format!("+ {} more cluster(s), {} conns, still LISTENING on {} (raise -n, or --listen for every listener)",
-                hidden.len(), hidden_conns, listen_cell(&hidden_listen, 40))
+                hidden.len(), hidden_conns, listen_cell_named(&hidden_listen, 40, &opts.names))
         };
         writeln!(out, "{}", dim(&msg, colors))?;
     }
@@ -157,14 +207,14 @@ fn write_body<W: Write>(out: &mut W, r: &net::NetReport, opts: &NetOpts, swatche
             &format!("{} (unattributed)", user),
             &ports,
             &world,
-            &outbound_summary(socks.iter(), &r.listen_port_set),
+            &outbound_summary(socks.iter(), &r.listen_port_set, &opts.names),
             row_prefix,
             opts
         )?;
         if opts.verbose {
             for sock in socks {
                 writeln!(out, "{}{:>cw$}  {}", indent, "",
-                    conn_line(sock, None, &r.listen_port_set, &r.traffic, colors), cw = CONNS_WIDTH)?;
+                    conn_line(sock, None, &r.listen_port_set, &r.traffic, &opts.names, colors), cw = CONNS_WIDTH)?;
             }
         }
     }
@@ -188,7 +238,7 @@ fn write_body<W: Write>(out: &mut W, r: &net::NetReport, opts: &NetOpts, swatche
 fn write_grid_row<W: Write>(out: &mut W, conns: usize, (tx, rx): (u64, u64), name: &str, listen_ports: &[u16], world_ports: &[u16], talking: &str, row_prefix: usize, opts: &NetOpts) -> io::Result<()> {
     let colors = opts.colors;
     let name_cell = format!("{:<w$}", style::truncate_middle(name, PROC_WIDTH), w = PROC_WIDTH);
-    let listen_plain = format!("{:<w$}", listen_cell(listen_ports, LISTEN_WIDTH), w = LISTEN_WIDTH);
+    let listen_plain = format!("{:<w$}", listen_cell_named(listen_ports, LISTEN_WIDTH, &opts.names), w = LISTEN_WIDTH);
     let listen_colored = if colors {
         world_ports.iter().fold(listen_plain, |l, p| paint_port(&l, *p, WORLD_COLOR))
     } else {
@@ -210,10 +260,16 @@ fn bytes_cell(v: u64) -> String {
 
 /// The listening-ports cell: as many `:port` tokens as fit the column, then a `(+n)` overflow
 /// marker so nothing silently disappears.
+#[cfg(test)]
 fn listen_cell(ports: &[u16], width: usize) -> String {
+    listen_cell_named(ports, width, &DisplayNames::default())
+}
+
+fn listen_cell_named(ports: &[u16], width: usize, names: &DisplayNames) -> String {
     let mut out = String::new();
     for (i, p) in ports.iter().enumerate() {
-        let tok = format!("{}:{}", if i > 0 { " " } else { "" }, p);
+        let label = names.services.get(p).map_or_else(|| p.to_string(), |name| format!("{}({})", p, name));
+        let tok = format!("{}:{}", if i > 0 { " " } else { "" }, label);
         let remaining = ports.len() - i;
         // Reserve room for the overflow marker unless everything left still fits.
         let reserve = if remaining > 1 { 6 } else { 0 };
@@ -280,7 +336,7 @@ pub fn write_net_detail<W: Write>(out: &mut W, r: &net::NetReport, procs: &[proc
     for (uid, socks) in &r.unattributed {
         writeln!(out, "{}", dim(&format!("user {} (unattributed)", kill::username(*uid)), colors))?;
         for sock in socks {
-            writeln!(out, "    {}", conn_line(sock, None, &r.listen_port_set, &r.traffic, colors))?;
+            writeln!(out, "    {}", conn_line(sock, None, &r.listen_port_set, &r.traffic, &opts.names, colors))?;
         }
     }
 
@@ -442,9 +498,16 @@ fn listener_scope(s: &net::Sock) -> (&'static str, i32, &'static str, &'static s
 /// One per-connection line for -v and unattributed listings: direction tag (listen/in/out),
 /// owning pid (when known), the socket label, and a [world] marker on listeners bound to all
 /// interfaces. The marker is textual so piped output keeps it; it turns red when colors are on.
-fn conn_line(sock: &net::Sock, pid: Option<i32>, listen_ports: &HashSet<u16>, traffic: &HashMap<u64, (u64, u64)>, colors: bool) -> String {
+fn conn_line(sock: &net::Sock, pid: Option<i32>, listen_ports: &HashSet<u16>, traffic: &HashMap<u64, (u64, u64)>, names: &DisplayNames, colors: bool) -> String {
     let pid_part = pid.map(|p| format!("pid {}  ", p)).unwrap_or_default();
     let mut text = format!("{:<6}  {}{}", sock.direction(listen_ports), pid_part, sock.label());
+    let relevant_port = if sock.is_listening() { sock.local_port } else { sock.peer_port };
+    if let Some(service) = names.services.get(&relevant_port) {
+        text.push_str(&format!("  [{}]", service));
+    }
+    if let Some(host) = names.hosts.get(&sock.peer) {
+        text.push_str(&format!("  [{}]", host));
+    }
     if let Some(&(tx, rx)) = traffic.get(&sock.inode) {
         if tx + rx > 0 {
             text.push_str(&format!("  tx {} rx {}", human_plain(tx), human_plain(rx)));
@@ -461,7 +524,7 @@ fn conn_line(sock: &net::Sock, pid: Option<i32>, listen_ports: &HashSet<u16>, tr
 /// Compact outbound summary: the top peer ports of connections dialed out, e.g.
 /// ":443 x28 :53 x2 (+3)". Inbound established connections are excluded: they are already
 /// represented by the listening port. Empty when nothing dialed.
-fn outbound_summary<'a>(socks: impl Iterator<Item = &'a net::Sock>, listen_ports: &HashSet<u16>) -> String {
+fn outbound_summary<'a>(socks: impl Iterator<Item = &'a net::Sock>, listen_ports: &HashSet<u16>, names: &DisplayNames) -> String {
     let mut counts: HashMap<u16, usize> = HashMap::new();
     for s in socks {
         if s.direction(listen_ports) == "out" {
@@ -474,7 +537,10 @@ fn outbound_summary<'a>(socks: impl Iterator<Item = &'a net::Sock>, listen_ports
     let mut peers: Vec<(u16, usize)> = counts.into_iter().collect();
     peers.sort_by_key(|&(port, n)| (std::cmp::Reverse(n), port));
     let shown = peers.iter().take(3)
-        .map(|(port, n)| if *n > 1 { format!(":{} x{}", port, n) } else { format!(":{}", port) })
+        .map(|(port, n)| {
+            let port = names.services.get(port).map_or_else(|| format!(":{}", port), |name| format!(":{}({})", port, name));
+            if *n > 1 { format!("{} x{}", port, n) } else { port }
+        })
         .collect::<Vec<_>>().join(" ");
     let extra = peers.len().saturating_sub(3);
     if extra > 0 {
@@ -524,7 +590,8 @@ pub fn write_json<W: Write>(out: &mut W, r: &net::NetReport, mem_used: u64, mem_
     struct Unattributed { uid: u32, user: String, conns: usize, connections: Vec<Connection> }
     #[derive(Serialize)]
     struct NetReport<'a> {
-        mode: &'static str, total_conns: usize, total_listening: usize, total_world: usize,
+        mode: &'static str, generated_at_unix_ms: u128, sample_interval_ms: u64,
+        total_conns: usize, total_listening: usize, total_world: usize,
         unattributed_conns: usize, mem_used: u64, mem_total: u64,
         clusters: Vec<NetCluster<'a>>, unattributed: Vec<Unattributed>
     }
@@ -551,12 +618,19 @@ pub fn write_json<W: Write>(out: &mut W, r: &net::NetReport, mem_used: u64, mem_
         uid: *uid, user: kill::username(*uid), conns: socks.len(),
         connections: socks.iter().map(|s| connection(s, None)).collect()
     }).collect();
+    let generated_at_unix_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_millis();
     let report = NetReport {
-        mode: "net", total_conns: r.total_conns, total_listening: r.total_listening,
+        mode: "net", generated_at_unix_ms, sample_interval_ms: opts.sample_interval_ms,
+        total_conns: r.total_conns, total_listening: r.total_listening,
         total_world: r.total_world, unattributed_conns: r.unattributed_count,
         mem_used, mem_total, clusters, unattributed
     };
-    serde_json::to_writer_pretty(&mut *out, &report).map_err(io::Error::other)?;
+    if opts.compact_json {
+        serde_json::to_writer(&mut *out, &report).map_err(io::Error::other)?;
+    } else {
+        serde_json::to_writer_pretty(&mut *out, &report).map_err(io::Error::other)?;
+    }
     writeln!(out)
 }
 
@@ -687,7 +761,8 @@ mod tests {
     }
 
     fn opts() -> NetOpts {
-        NetOpts { top: 15, verbose: false, colors: false, width: None, port: None }
+        NetOpts { top: 15, verbose: false, colors: false, width: None, port: None,
+            compact_json: false, sample_interval_ms: 400, names: DisplayNames::default() }
     }
 
     #[test]
@@ -884,11 +959,19 @@ mod tests {
         for (i, peer) in [443u16, 443, 993, 465, 587, 22].iter().enumerate() {
             c.conns.push((estab(50000 + i as u16, *peer), 500));
         }
-        let s = outbound_summary(c.conns.iter().map(|(s, _)| s), &listen);
+        let s = outbound_summary(c.conns.iter().map(|(s, _)| s), &listen, &DisplayNames::default());
         assert!(s.starts_with(":443 x3"), "443 should lead with its count: {s}");
         assert!(s.contains("(+2)"), "overflow beyond top 3 is counted: {s}");
         // Listeners alone produce no summary.
-        assert!(outbound_summary([sock(80, SockState::Listen)].iter(), &listen).is_empty());
+        assert!(outbound_summary([sock(80, SockState::Listen)].iter(), &listen, &DisplayNames::default()).is_empty());
+    }
+
+    #[test]
+    fn service_names_annotate_outbound_ports() {
+        let c = &report().clusters[0];
+        let listen: HashSet<u16> = [53, 80, 443, 5432].into_iter().collect();
+        let names = DisplayNames { services: [(443, "https".to_string())].into_iter().collect(), hosts: HashMap::new() };
+        assert!(outbound_summary(c.conns.iter().map(|(s, _)| s), &listen, &names).contains(":443(https)"));
     }
 
     #[test]

@@ -1,15 +1,16 @@
 //! pq: query and cluster the processes eating your CPU/memory. Companion to dq, sharing the same
 //! rendering primitives (style/donut/term/graphics/chart) from the qtools library.
-mod proc; mod identity; mod cluster; mod report; mod kill; mod net; mod net_report; mod netdiag;
+mod proc; mod identity; mod cluster; mod report; mod kill; mod net; mod net_report; mod netdiag; mod pq_query;
 
 use std::collections::HashMap;
 use std::io::{self, BufWriter, IsTerminal, Write};
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use qtools::{graphics, style, term};
+use qtools::help::{self, Request, Topic};
 
-use cluster::Metric;
+use pq_query::{Action, KillOptions, ProcessSelection, QueryPlan, View};
 
 const EXAMPLES: &str = "\
 Examples:
@@ -20,6 +21,152 @@ Examples:
   pq --port 8080            who owns port 8080
   pq --port 8080 --kill     kill whatever is LISTENING on port 8080
   pq --kill gradle          kill the gradle tree (preview + confirm)";
+
+const HELP: &str = "\
+pq — query what is using your machine
+
+Usage:
+  pq [PATTERN]               CPU/memory report
+  pq --net [PATTERN]         Network report
+  pq --port PORT             Inspect a local port
+  pq --kill PATTERN          Stop matching process trees
+
+Common options:
+  -m, --memory               Sort by memory
+  -s, --swap                 Sort by swap
+  -v, --verbose              Show underlying processes/connections
+  -n, --top N                Number of clusters to show
+      --json                 Pretty machine-readable output
+
+Focused help:
+  pq help process            Reports and metrics
+  pq help net                Connections and ports
+  pq help filters            User, PID, and thresholds
+  pq help kill               Safe process termination
+  pq help output             JSON, JSONL, and plain output
+
+Tip: pq --net --help and pq --kill --help open the matching topic.";
+
+const HELP_PROCESS: &str = "\
+pq process reports
+
+Examples:
+  pq                         CPU report
+  pq --memory                Sort by resident memory
+  pq --swap                  Sort by swap
+  pq -v chrome               Expand matching clusters into processes
+  pq -n 30 --interval 1000   Show 30 clusters, sampled for one second
+
+Options:
+  -c, --cpu                  Sort/chart by CPU (default)
+  -m, --memory               Sort/chart by memory
+  -s, --swap                 Sort/chart by swap
+  -v, --verbose              Expand clusters to member processes
+  -n, --top N                Clusters to show (default 15)
+      --interval MS          CPU sampling interval (default 400)
+
+See also: pq help filters, pq help output";
+
+const HELP_FILTERS: &str = "\
+pq filters
+
+Filters compose: every supplied filter must match.
+
+Examples:
+  pq chrome                  Identity/command contains “chrome”
+  pq --user postgres
+  pq --pid 1234
+  pq --min-cpu 10
+  pq --min-memory 500M
+  pq --user rafael --min-memory 2GiB
+
+Options:
+      --user USER            Username or numeric UID
+      --pid PID              Exact process ID
+      --min-cpu PERCENT      Minimum cluster CPU percentage
+      --min-memory SIZE      Minimum cluster memory; accepts M, GiB, etc.
+
+The same filters work in network mode.";
+
+const HELP_NET: &str = "\
+pq network queries
+
+Examples:
+  pq --net                   Network activity by application
+  pq --net -v                Every matching connection
+  pq --listen                Every listener
+  pq --port 8080             Inspect a local port
+  pq --remote-port 443       Connections to peer port 443
+  pq --net --tcp --state established
+  pq --public                Listeners bound to all interfaces
+
+Filters:
+      --port PORT            Local port
+      --remote-port PORT     Peer port
+      --listen               Listening sockets only
+      --tcp / --udp          Protocol
+      --state STATE          listen, established, bound, or other
+      --public               Bound to 0.0.0.0 or :: (firewall not checked)
+
+Presentation:
+  -v, --verbose              Per-connection rows
+      --services             Annotate ports from /etc/services
+      --resolve              Reverse-resolve peers in connection rows; may be slow
+
+Targeting and process filters can be combined. See: pq help filters";
+
+const HELP_KILL: &str = "\
+pq safe process termination
+
+Examples:
+  pq --kill gradle           Preview, confirm, TERM, then KILL survivors
+  pq --kill chrome --dry-run Preview only
+  pq --port 8080 --kill      Stop the process listening on local port 8080
+  pq --net --udp --kill dns  Stop matching UDP socket owners
+
+Options:
+      --kill [PATTERN]       Select matching process trees/socket owners
+      --dry-run              Preview without signaling
+  -y, --yes                  Skip confirmation
+  -x, --exact                Exact resolved-identity match
+      --signal SIGNAL        Initial signal (default TERM)
+      --grace SECONDS        Wait before SIGKILL (default 4)
+  -9, --sigkill              SIGKILL immediately
+
+pq excludes itself, PID 1, and the invoking shell/ancestor chain.";
+
+const HELP_OUTPUT: &str = "\
+pq output
+
+Examples:
+  pq --json                  Pretty JSON snapshot
+  pq --jsonl                 One compact JSON object and newline
+  pq --net --json | jq .clusters
+  pq --no-color | less
+
+Options:
+      --json                 Pretty machine-readable JSON
+      --jsonl                Compact one-object-per-line JSON
+      --no-color             Disable ANSI color and terminal graphics
+  -n, --top N                Also limits clusters in machine output
+
+JSON includes generated_at_unix_ms and sample_interval_ms.";
+
+static HELP_TOPICS: &[Topic] = &[
+    Topic { name: "process", aliases: &["proc", "metrics"], text: HELP_PROCESS },
+    Topic { name: "net", aliases: &["network", "ports"], text: HELP_NET },
+    Topic { name: "filters", aliases: &["filter"], text: HELP_FILTERS },
+    Topic { name: "kill", aliases: &["signal"], text: HELP_KILL },
+    Topic { name: "output", aliases: &["json", "jsonl"], text: HELP_OUTPUT },
+];
+
+static HELP_CONTEXTS: &[(&[&str], &str)] = &[
+    (&["--kill", "--dry-run", "--signal", "--grace", "--sigkill", "-9"], "kill"),
+    (&["--net", "--port", "--listen", "--remote-port", "--tcp", "--udp", "--state", "--public", "--services", "--resolve"], "net"),
+    (&["--user", "--pid", "--min-cpu", "--min-memory"], "filters"),
+    (&["--json", "--jsonl", "--no-color"], "output"),
+    (&["--cpu", "-c", "--memory", "-m", "--swap", "-s", "--verbose", "-v", "--top", "-n", "--interval"], "process"),
+];
 
 #[derive(Parser, Debug)]
 #[command(name = "pq", about = "pq: query and cluster the processes eating your CPU/memory or talking on the network.", after_help = EXAMPLES)]
@@ -32,6 +179,18 @@ struct Args {
     #[arg(long, default_value_t = 400)] interval: u64,
     /// Emit machine-readable JSON
     #[arg(long)] json: bool,
+    /// Emit one compact JSON object per line (useful for append-only logs)
+    #[arg(long, conflicts_with = "json")] jsonl: bool,
+    /// Disable ANSI color and terminal graphics
+    #[arg(long)] no_color: bool,
+    /// Only processes owned by this username or numeric uid
+    #[arg(long, help_heading = "Filter")] user: Option<String>,
+    /// Only this process (network mode: sockets owned by this pid)
+    #[arg(long, help_heading = "Filter")] pid: Option<i32>,
+    /// Only clusters using at least this percentage of total CPU
+    #[arg(long, value_name = "PERCENT", help_heading = "Filter")] min_cpu: Option<f64>,
+    /// Only clusters using at least this much memory (for example 500M or 2GiB)
+    #[arg(long, value_parser = parse_bytes, value_name = "SIZE", help_heading = "Filter")] min_memory: Option<u64>,
     /// Sort and chart by memory instead of CPU
     #[arg(short = 'm', long, help_heading = "Metric (default report)")] memory: bool,
     /// Sort and chart by swap usage instead of CPU
@@ -46,6 +205,20 @@ struct Args {
     #[arg(long, help_heading = "Net mode")] port: Option<u16>,
     /// Only listening sockets (implies --net)
     #[arg(long, help_heading = "Net mode")] listen: bool,
+    /// Only sockets connected to this peer port (implies --net)
+    #[arg(long, help_heading = "Net mode")] remote_port: Option<u16>,
+    /// Only TCP sockets (implies --net)
+    #[arg(long, conflicts_with = "udp", help_heading = "Net mode")] tcp: bool,
+    /// Only UDP sockets (implies --net)
+    #[arg(long, conflicts_with = "tcp", help_heading = "Net mode")] udp: bool,
+    /// Only sockets in this state (implies --net)
+    #[arg(long, value_enum, help_heading = "Net mode")] state: Option<NetState>,
+    /// Only listeners bound to all interfaces (implies --net; firewall not checked)
+    #[arg(long = "public", help_heading = "Net mode")] public_only: bool,
+    /// Show conventional names from /etc/services beside port numbers
+    #[arg(long, help_heading = "Net mode")] services: bool,
+    /// Reverse-resolve peer IPs in per-connection rows (may be slow)
+    #[arg(long, help_heading = "Net mode")] resolve: bool,
     /// Kill matching process trees (preview + confirm); pattern optional with --port/--listen
     #[arg(long, num_args = 0..=1, default_missing_value = "", help_heading = "Kill")] kill: Option<String>,
     /// Preview only, do not signal
@@ -64,50 +237,47 @@ struct Args {
     pattern: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum NetState { Listen, Established, Bound, Other }
+
 fn main() {
+    show_help_and_exit();
     let args = Args::parse();
-
-    if args.kill.is_some() {
-        let pattern = kill_pattern(&args);
-        if pattern.is_none() && args.port.is_none() && !args.listen {
-            eprintln!("pq: --kill needs a pattern or a --net filter (--port / --listen)");
-            std::process::exit(1);
-        }
-        if net_mode(&args) {
-            run_net_kill(&args, pattern);
-        } else {
-            run_kill(pattern.unwrap(), &args);
-        }
-        return;
+    let plan = QueryPlan::from_args(&args).unwrap_or_else(|message| {
+        eprintln!("pq: {message}");
+        std::process::exit(1);
+    });
+    match (&plan.action, plan.view) {
+        (Action::Kill(options), View::Network) => { run_net_kill(&plan, options); return; }
+        (Action::Kill(options), View::Processes) => { run_kill(options.pattern.as_deref().unwrap(), &plan, options); return; }
+        (Action::Report, View::Network) => { run_net_report(&plan); return; }
+        (Action::Report, View::Processes) => {}
     }
 
-    if net_mode(&args) {
-        run_net_report(&args);
-        return;
-    }
-
-    let metric = if args.swap { Metric::Swap } else if args.memory { Metric::Memory } else { Metric::Cpu };
+    let metric = plan.metric;
 
     // Always take the two-sample CPU delta (even in --memory mode) so both the cpu and memory
     // columns are real numbers, not a fake 0. The interval is small; --kill exits before here.
     // The per-core /proc/stat samples ride along at the same two points, for --cpu's per-core rings.
     let prev = proc::snapshot();
     let stat0 = proc::cpu_stat();
-    std::thread::sleep(std::time::Duration::from_millis(args.interval));
+    std::thread::sleep(std::time::Duration::from_millis(plan.interval_ms));
     let cur = proc::snapshot();
     let stat1 = proc::cpu_stat();
-    let procs = proc::cpu_percent(&prev, &cur, args.interval as f64 / 1000.0);
+    let procs = proc::cpu_percent(&prev, &cur, plan.interval_ms as f64 / 1000.0);
     let core_loads = proc::per_core_busy(&stat0, &stat1);
     // Which process(es) actually ran on each core, for the --cpu donut's process-colored rings.
     let attribution = proc::per_core_attribution(&procs);
 
-    let mut clusters = cluster::cluster(&procs, metric);
+    let all_clusters = cluster::cluster(&procs, metric);
     // System-wide, computed before any pattern filter: the header's cpu% is a system total, matching
     // the mem/swap totals beside it (which are always system-wide), so a filtered report never shows
     // a small filtered cpu% next to unfiltered mem/swap.
-    let cpu_total: f64 = clusters.iter().map(|c| c.cpu).sum();
+    let cpu_total: f64 = all_clusters.iter().map(|c| c.cpu).sum();
+    let selected_procs: Vec<proc::Proc> = procs.iter().filter(|p| process_matches(p, &plan.process)).cloned().collect();
+    let mut clusters = cluster::cluster(&selected_procs, metric);
 
-    if let Some(pattern) = &args.pattern {
+    if let Some(pattern) = &plan.process.pattern {
         let needle = pattern.to_lowercase();
         clusters.retain(|c| {
             c.identity.to_lowercase().contains(&needle)
@@ -116,25 +286,31 @@ fn main() {
                 })
         });
     }
+    clusters.retain(|c| {
+        plan.process.min_cpu.is_none_or(|min| c.cpu >= min)
+            && plan.process.min_memory.is_none_or(|min| c.rss >= min)
+    });
 
     let (mem_used, mem_total) = proc::mem_info();
     let (swap_used, swap_total) = proc::swap_info();
 
     // Colors/width are only meaningful on an interactive terminal; JSON and piped output stay plain.
-    let interactive = std::io::stdout().is_terminal() && !args.json;
+    let interactive = std::io::stdout().is_terminal() && !plan.output.machine() && !plan.output.no_color;
     // Graphics need an interactive terminal that also speaks a raster protocol; the capability probe
     // is only worth running when we might actually use it.
     let graphics = interactive && graphics::supported();
     let opts = report::ReportOpts {
         metric,
-        top: args.top.unwrap_or(15),
-        verbose: args.verbose,
+        top: plan.output.top.unwrap_or(15),
+        verbose: plan.output.verbose,
         colors: interactive,
-        width: if interactive { term::stdout_width() } else { None }
+        width: if interactive { term::stdout_width() } else { None },
+        compact_json: plan.output.compact_json(),
+        sample_interval_ms: plan.interval_ms
     };
 
     let mut out = BufWriter::new(io::stdout());
-    let result = if args.json {
+    let result = if plan.output.machine() {
         report::write_json(&mut out, &clusters, mem_used, mem_total, swap_used, swap_total, cpu_total, &opts)
     } else if graphics {
         report::write_graphics(&mut out, &clusters, mem_used, mem_total, swap_used, swap_total, cpu_total, &core_loads, &attribution, &opts)
@@ -152,16 +328,50 @@ fn main() {
     }
 }
 
+fn show_help_and_exit() {
+    let args: Vec<String> = std::env::args().collect();
+    match help::route(&args, HELP, HELP_TOPICS, HELP_CONTEXTS) {
+        Request::None => {}
+        Request::Show(text) => { println!("{}", text); std::process::exit(0); }
+        Request::Unknown(topic) => {
+            eprintln!("pq: unknown help topic '{topic}'\navailable topics: {}", help::topic_names(HELP_TOPICS));
+            std::process::exit(2);
+        }
+    }
+}
+
 /// --port and --listen imply --net, so `pq --port 8080` works without the extra flag.
-fn net_mode(args: &Args) -> bool {
-    args.net || args.port.is_some() || args.listen
+fn parse_bytes(raw: &str) -> Result<u64, String> {
+    let s = raw.trim();
+    let split = s.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(s.len());
+    let number: f64 = s[..split].parse().map_err(|_| format!("invalid size: {raw}"))?;
+    let unit = s[split..].trim().to_ascii_lowercase();
+    let multiplier = match unit.as_str() {
+        "" | "b" => 1.0,
+        "k" | "kb" => 1_000.0, "ki" | "kib" => 1_024.0,
+        "m" | "mb" => 1_000_000.0, "mi" | "mib" => 1_048_576.0,
+        "g" | "gb" => 1_000_000_000.0, "gi" | "gib" => 1_073_741_824.0,
+        "t" | "tb" => 1_000_000_000_000.0, "ti" | "tib" => 1_099_511_627_776.0,
+        _ => return Err(format!("unknown size unit in {raw}"))
+    };
+    let bytes = number * multiplier;
+    if !bytes.is_finite() || bytes < 0.0 || bytes > u64::MAX as f64 {
+        Err(format!("size out of range: {raw}"))
+    } else {
+        Ok(bytes.round() as u64)
+    }
+}
+
+fn user_matches(uid: u32, wanted: &str) -> bool {
+    wanted.parse::<u32>().map_or_else(|_| kill::username(uid) == wanted, |n| uid == n)
+}
+
+fn process_matches(p: &proc::Proc, selection: &ProcessSelection) -> bool {
+    selection.pid.is_none_or(|pid| p.pid == pid)
+        && selection.user.as_deref().is_none_or(|user| user_matches(p.uid, user))
 }
 
 /// The --kill pattern, if a non-empty one was given (bare `--kill` parses as Some("")).
-fn kill_pattern(args: &Args) -> Option<&str> {
-    args.kill.as_deref().map(str::trim).filter(|s| !s.is_empty())
-}
-
 /// One socket sample: read the tables, attribute inodes to the sampled pids. Returns the
 /// attributed sockets and how many /proc/net tables were readable (0 = not Linux / no procfs).
 fn sample_sockets(procs: &[proc::Proc]) -> (Vec<(net::Sock, Option<i32>)>, usize) {
@@ -171,39 +381,55 @@ fn sample_sockets(procs: &[proc::Proc]) -> (Vec<(net::Sock, Option<i32>)>, usize
     (net::attribute(socks, &inodes), tables_read)
 }
 
+/// Apply the complete socket/process selector intersection. Reports and actions share this path;
+/// kill-by-port adds its stricter listener/attribution safety check after selection.
+fn select_sockets(attributed: Vec<(net::Sock, Option<i32>)>, plan: &QueryPlan) -> Vec<(net::Sock, Option<i32>)> {
+    let filtered = attributed.into_iter().filter(|(sock, pid)| {
+        plan.process.pid.is_none_or(|wanted| *pid == Some(wanted))
+            && plan.process.user.as_deref().is_none_or(|wanted| user_matches(sock.uid, wanted))
+    }).collect();
+    net::filter_socks_extended(filtered, plan.sockets.remote_port, plan.sockets.protocol,
+        plan.sockets.state, plan.sockets.public_only)
+}
+
 /// `--net` report: sample processes (same two-sample cpu delta as the normal report, so the cpu
 /// column is real), read and attribute sockets, filter, cluster, render.
-fn run_net_report(args: &Args) {
+fn run_net_report(plan: &QueryPlan) {
     let prev = proc::snapshot();
-    std::thread::sleep(Duration::from_millis(args.interval));
-    let procs = proc::cpu_percent(&prev, &proc::snapshot(), args.interval as f64 / 1000.0);
+    std::thread::sleep(Duration::from_millis(plan.interval_ms));
+    let procs = proc::cpu_percent(&prev, &proc::snapshot(), plan.interval_ms as f64 / 1000.0);
 
     let (attributed, tables_read) = sample_sockets(&procs);
     if tables_read == 0 {
         eprintln!("pq: cannot read /proc/net (is this Linux?)");
         std::process::exit(1);
     }
-    let filtered = net::filter_socks(attributed, args.port, args.listen);
+    let filtered = net::filter_socks(select_sockets(attributed, plan), plan.sockets.local_port, plan.sockets.listen);
     // Per-socket byte counters from sock_diag (what ss -i reads); failure degrades to blanks.
     let traffic = netdiag::tcp_traffic();
-    let report = net::net_clusters(&procs, filtered, args.pattern.as_deref(), traffic);
+    let mut report = net::net_clusters(&procs, filtered, plan.process.pattern.as_deref(), traffic);
+    report.clusters.retain(|c| plan.process.min_cpu.is_none_or(|min| c.cpu >= min)
+        && plan.process.min_memory.is_none_or(|min| c.rss >= min));
 
     let (mem_used, mem_total) = proc::mem_info();
-    let interactive = std::io::stdout().is_terminal() && !args.json;
+    let interactive = std::io::stdout().is_terminal() && !plan.output.machine() && !plan.output.no_color;
     let graphics = interactive && graphics::supported();
     let opts = net_report::NetOpts {
         // --listen means "show me what's serving": never cut a listener off by default.
-        top: args.top.unwrap_or(if args.listen { usize::MAX } else { 15 }),
-        verbose: args.verbose,
+        top: plan.output.top.unwrap_or(if plan.sockets.listen { usize::MAX } else { 15 }),
+        verbose: plan.output.verbose,
         colors: interactive,
         width: if interactive { term::stdout_width() } else { None },
-        port: args.port
+        port: plan.sockets.local_port,
+        compact_json: plan.output.compact_json(),
+        sample_interval_ms: plan.interval_ms,
+        names: net_report::display_names(&report, plan.sockets.services, plan.sockets.resolve)
     };
 
     let mut out = BufWriter::new(io::stdout());
-    let result = if args.json {
+    let result = if plan.output.machine() {
         net_report::write_json(&mut out, &report, mem_used, mem_total, &opts)
-    } else if args.port.is_some() || (args.pattern.is_some() && !args.verbose) {
+    } else if plan.sockets.local_port.is_some() || (plan.process.pattern.is_some() && !plan.output.verbose) {
         // A targeted question (a port, or a named app): answer it with detail cards, not a
         // donut. -v opts back into the raw per-connection grid.
         net_report::write_net_detail(&mut out, &report, &procs, mem_used, mem_total, &opts)
@@ -227,11 +453,11 @@ fn run_net_report(args: &Args) {
 /// spec's "kill what is listening" rule, with diagnostics for the no-listener and cannot-attribute
 /// cases); otherwise the selection is every attributed socket passing --listen, narrowed by the
 /// pattern if one was given.
-fn run_net_kill(args: &Args, pattern: Option<&str>) {
+fn run_net_kill(plan: &QueryPlan, options: &KillOptions) {
     let self_pid = std::process::id() as i32;
     let prev = proc::snapshot();
-    std::thread::sleep(Duration::from_millis(args.interval));
-    let procs = proc::cpu_percent(&prev, &proc::snapshot(), args.interval as f64 / 1000.0);
+    std::thread::sleep(Duration::from_millis(plan.interval_ms));
+    let procs = proc::cpu_percent(&prev, &proc::snapshot(), plan.interval_ms as f64 / 1000.0);
 
     let (attributed, tables_read) = sample_sockets(&procs);
     if tables_read == 0 {
@@ -239,7 +465,9 @@ fn run_net_kill(args: &Args, pattern: Option<&str>) {
         std::process::exit(1);
     }
 
-    let owners: Vec<(net::Sock, i32)> = match args.port {
+    let attributed = select_sockets(attributed, plan);
+
+    let owners: Vec<(net::Sock, i32)> = match plan.sockets.local_port {
         Some(port) => match net::port_kill_candidates(&attributed, port) {
             net::PortCandidates::Listeners(owners) => owners,
             net::PortCandidates::Unattributable { uid } => {
@@ -262,27 +490,27 @@ fn run_net_kill(args: &Args, pattern: Option<&str>) {
                 return;
             }
         },
-        None => net::filter_socks(attributed, None, args.listen).into_iter()
+        None => net::filter_socks(attributed, None, plan.sockets.listen).into_iter()
             .filter_map(|(s, pid)| pid.map(|p| (s, p)))
             .collect()
     };
 
-    let targets = kill::select_owning(&procs, &owners, pattern, args.exact, self_pid);
+    let targets = kill::select_owning(&procs, &owners, options.pattern.as_deref(), options.exact, self_pid);
     if targets.is_empty() {
         println!("pq: no matching socket owners");
         return;
     }
-    let headline = match args.port {
+    let headline = match plan.sockets.local_port {
         Some(port) => format!("own port {}", port),
         None => "own matching sockets".to_string()
     };
-    preview_and_kill(&targets, &procs, args, &headline);
+    preview_and_kill(&targets, &procs, options, &headline);
 }
 
 /// `--kill <pattern>`: sample, select the matching subtree(s), preview, confirm, then escalate
 /// SIGTERM -> (wait `--grace`) -> SIGKILL. Never signals pq itself, its ancestor chain, or pid 1
 /// (enforced by `kill::select`).
-fn run_kill(pattern: &str, args: &Args) {
+fn run_kill(pattern: &str, plan: &QueryPlan, options: &KillOptions) {
     if pattern.trim().is_empty() {
         eprintln!("pq: --kill needs a non-empty pattern");
         std::process::exit(1);
@@ -293,21 +521,21 @@ fn run_kill(pattern: &str, args: &Args) {
     // A real two-sample delta so the preview's cpu% column is meaningful, same cadence as the
     // normal report.
     let prev = proc::snapshot();
-    std::thread::sleep(Duration::from_millis(args.interval));
-    let procs = proc::cpu_percent(&prev, &proc::snapshot(), args.interval as f64 / 1000.0);
+    std::thread::sleep(Duration::from_millis(plan.interval_ms));
+    let procs = proc::cpu_percent(&prev, &proc::snapshot(), plan.interval_ms as f64 / 1000.0);
 
-    let targets = kill::select(&procs, pattern, args.exact, self_pid);
+    let targets = kill::select(&procs, pattern, options.exact, self_pid);
 
     if targets.is_empty() {
         println!("pq: no processes match \"{}\"", pattern);
         return;
     }
-    preview_and_kill(&targets, &procs, args, &format!("match \"{}\"", pattern));
+    preview_and_kill(&targets, &procs, options, &format!("match \"{}\"", pattern));
 }
 
 /// Preview the targets (with a socket column when net mode supplied one), confirm unless -y,
 /// then escalate. Shared by pattern kill and net kill.
-fn preview_and_kill(targets: &[kill::Target], procs: &[proc::Proc], args: &Args, headline: &str) {
+fn preview_and_kill(targets: &[kill::Target], procs: &[proc::Proc], options: &KillOptions, headline: &str) {
     let by_pid: HashMap<i32, &proc::Proc> = procs.iter().map(|p| (p.pid, p)).collect();
 
     let has_sock = targets.iter().any(|t| t.sock.is_some());
@@ -329,17 +557,17 @@ fn preview_and_kill(targets: &[kill::Target], procs: &[proc::Proc], args: &Args,
         }
     }
 
-    if args.dry_run {
+    if options.dry_run {
         return;
     }
-    if !args.yes && !confirm() {
+    if !options.yes && !confirm() {
         eprintln!("pq: aborted");
         return;
     }
-    let (sig, grace) = if args.sigkill {
+    let (sig, grace) = if options.sigkill {
         (libc::SIGKILL, 0)
     } else {
-        (kill::parse_signal(&args.signal), args.grace)
+        (kill::parse_signal(&options.signal), options.grace)
     };
     let result = kill::escalate(&kill::RealSender, targets, sig, grace, &|d| std::thread::sleep(d));
     println!(
@@ -370,24 +598,42 @@ mod tests {
     #[test]
     fn port_and_listen_imply_net_mode() {
         let a = Args::try_parse_from(["pq", "--port", "8080"]).unwrap();
-        assert!(net_mode(&a));
+        assert_eq!(QueryPlan::from_args(&a).unwrap().view, View::Network);
         let a = Args::try_parse_from(["pq", "--listen"]).unwrap();
-        assert!(net_mode(&a));
+        assert_eq!(QueryPlan::from_args(&a).unwrap().view, View::Network);
         let a = Args::try_parse_from(["pq"]).unwrap();
-        assert!(!net_mode(&a));
+        assert_eq!(QueryPlan::from_args(&a).unwrap().view, View::Processes);
+    }
+
+    #[test]
+    fn network_filters_imply_net_mode() {
+        for flag in ["--tcp", "--udp", "--public", "--services", "--resolve"] {
+            assert_eq!(QueryPlan::from_args(&Args::try_parse_from(["pq", flag]).unwrap()).unwrap().view, View::Network);
+        }
+        assert_eq!(QueryPlan::from_args(&Args::try_parse_from(["pq", "--remote-port", "443"]).unwrap()).unwrap().view, View::Network);
+        assert_eq!(QueryPlan::from_args(&Args::try_parse_from(["pq", "--state", "established"]).unwrap()).unwrap().view, View::Network);
+    }
+
+    #[test]
+    fn byte_sizes_accept_decimal_and_binary_units() {
+        assert_eq!(parse_bytes("500M").unwrap(), 500_000_000);
+        assert_eq!(parse_bytes("2GiB").unwrap(), 2 * 1024 * 1024 * 1024);
+        assert!(parse_bytes("lots").is_err());
     }
 
     #[test]
     fn bare_kill_parses_as_no_pattern() {
         let a = Args::try_parse_from(["pq", "--port", "8080", "--kill"]).unwrap();
         assert_eq!(a.kill.as_deref(), Some(""));
-        assert_eq!(kill_pattern(&a), None);
+        let plan = QueryPlan::from_args(&a).unwrap();
+        assert!(matches!(plan.action, Action::Kill(KillOptions { pattern: None, .. })));
     }
 
     #[test]
     fn kill_with_pattern_still_works() {
         let a = Args::try_parse_from(["pq", "--kill", "gradle"]).unwrap();
-        assert_eq!(kill_pattern(&a), Some("gradle"));
+        let plan = QueryPlan::from_args(&a).unwrap();
+        assert!(matches!(plan.action, Action::Kill(KillOptions { pattern: Some(ref p), .. }) if p == "gradle"));
     }
 
     #[test]

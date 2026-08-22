@@ -19,6 +19,10 @@ $ pq                            # what's eating my CPU/memory/swap right now
 $ dq                            # what's using disk space in the current directory
 ```
 
+Help is deliberately layered: `pq --help` and `dq --help` are short orientation pages, with focused
+reference under `pq help process|net|filters|kill|output` and `dq help scan|output`. Contextual forms
+such as `pq --net --help`, `pq --kill --help`, and `dq --json --help` open the matching topic directly.
+
 `sudo ./install.sh` installs system-wide (to `/usr/local/bin`) instead of just for your user.
 
 ## dq (disk query)
@@ -58,7 +62,10 @@ member processes.
     pq -v                             # expand clusters (processes; connections in --net mode)
     pq --interval MS                   # CPU sample interval (default 400ms)
     pq --json                           # machine-readable output
+    pq --jsonl                          # one compact JSON snapshot per line
     pq PATTERN                           # filter report to matching clusters
+    pq --user USER --min-memory 500M     # conventional filters compose
+    pq --pid PID --min-cpu 10             # exact pid and minimum CPU percentage
     pq --net [--listen] [--port N]       # network mode: see below
     pq --kill PATTERN / --port N --kill   # kill mode: see below
 
@@ -101,6 +108,18 @@ attribution.
     pq --port 8080            # who owns port 8080 (--port implies --net)
     pq --net --json           # machine-readable output
     pq --net PATTERN          # filter clusters, same matching as the main report
+    pq --net --remote-port 443 # sockets connected to peer port 443
+    pq --net --tcp / --udp     # filter by protocol
+    pq --net --state established # listen, established, bound, or other
+    pq --net --public          # listeners bound to all interfaces
+    pq --net --services        # annotate ports with names from /etc/services
+    pq --net -v --resolve      # reverse-resolve peer IPs (may be slow)
+
+The process filters `--user`, `--pid`, `--min-cpu`, and `--min-memory` can be combined and also
+apply in network mode. `--json` is pretty-printed; `--jsonl` emits the same snapshot as one compact
+line for append-only logs. Both include `generated_at_unix_ms` and `sample_interval_ms`. `-n` limits
+clusters in machine output just as it does in the human report. Use `--no-color` to force the plain
+text renderer on an interactive terminal.
 
 ### pq --port N --kill: free up a port
 

@@ -220,6 +220,26 @@ pub fn filter_socks(attributed: Vec<(Sock, Option<i32>)>, port: Option<u16>, lis
         .collect()
 }
 
+/// Additional composable report filters. Local-port/listener filtering stays in `filter_socks`
+/// because kill mode intentionally uses only those established semantics.
+pub fn filter_socks_extended(
+    attributed: Vec<(Sock, Option<i32>)>, remote_port: Option<u16>, proto: Option<Proto>,
+    state: Option<&str>, public_only: bool
+) -> Vec<(Sock, Option<i32>)> {
+    attributed.into_iter()
+        .filter(|(s, _)| remote_port.is_none_or(|p| s.peer_port == p))
+        .filter(|(s, _)| proto.is_none_or(|p| s.proto == p))
+        .filter(|(s, _)| state.is_none_or(|wanted| match wanted {
+            "listen" => s.proto == Proto::Tcp && s.state == SockState::Listen,
+            "established" => s.state == SockState::Established,
+            "bound" => s.proto == Proto::Udp && s.is_listening(),
+            "other" => !s.is_listening() && s.state != SockState::Established,
+            _ => true
+        }))
+        .filter(|(s, _)| !public_only || s.is_world_exposed())
+        .collect()
+}
+
 /// One identity cluster's network view: the base cluster's cpu/rss/member-count aggregates plus
 /// every socket attributed to a member pid.
 pub struct NetCluster {
@@ -639,6 +659,21 @@ mod tests {
         let listening = filter_socks(socks.clone(), Some(8080), true);
         assert_eq!(listening.len(), 1);
         assert_eq!(filter_socks(socks, None, false).len(), 3);
+    }
+
+    #[test]
+    fn extended_filters_compose() {
+        let socks = vec![
+            (Sock { proto: Proto::Tcp, state: SockState::Established,
+                local: "127.0.0.1".parse().unwrap(), local_port: 40000,
+                peer: "1.1.1.1".parse().unwrap(), peer_port: 443, uid: 1000, inode: 1 }, Some(10)),
+            (Sock { proto: Proto::Udp, state: SockState::Other(7),
+                local: "0.0.0.0".parse().unwrap(), local_port: 53,
+                peer: "0.0.0.0".parse().unwrap(), peer_port: 0, uid: 0, inode: 2 }, Some(20)),
+        ];
+        assert_eq!(filter_socks_extended(socks.clone(), Some(443), Some(Proto::Tcp), Some("established"), false).len(), 1);
+        assert_eq!(filter_socks_extended(socks.clone(), None, Some(Proto::Udp), Some("bound"), true).len(), 1);
+        assert!(filter_socks_extended(socks, None, Some(Proto::Tcp), Some("listen"), false).is_empty());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! pq: query and cluster the processes eating your CPU/memory. Companion to dq, sharing the same
 //! rendering primitives (style/donut/term/graphics/chart) from the qtools library.
-mod proc; mod identity; mod cluster; mod report; mod kill; mod net; mod net_report; mod netdiag; mod pq_query;
+mod proc; mod identity; mod cluster; mod report; mod kill; mod net; mod net_report; mod netdiag; mod pq_query; mod io_report;
 
 use std::collections::HashMap;
 use std::io::{self, BufWriter, IsTerminal, Write};
@@ -27,6 +27,7 @@ pq — query what is using your machine
 
 Usage:
   pq [PATTERN]               CPU/memory report
+  pq --io [PATTERN]          Process read/write activity
   pq --net [PATTERN]         Network report
   pq --port PORT             Inspect a local port
   pq --kill PATTERN          Stop matching process trees
@@ -40,6 +41,7 @@ Common options:
 
 Focused help:
   pq help process            Reports and metrics
+  pq help io                 Process read/write activity
   pq help net                Connections and ports
   pq help filters            User, PID, and thresholds
   pq help kill               Safe process termination
@@ -87,6 +89,28 @@ Options:
       --min-memory SIZE      Minimum cluster memory; accepts M, GiB, etc.
 
 The same filters work in network mode.";
+
+const HELP_IO: &str = "\
+pq process I/O
+
+Examples:
+  pq --io                    Sort by combined read/write rate
+  pq --read                  Sort by read rate
+  pq --write                 Sort by write rate
+  pq --io postgres           I/O for matching processes
+  pq --user postgres --io    I/O owned by postgres
+  pq --port 5432 --io        I/O for processes owning local port 5432
+  pq --remote-port 443 --io  I/O for processes connected to peer port 443
+
+Options:
+      --io                   Combined process I/O view
+      --read                 Process I/O view sorted by reads
+      --write                Process I/O view sorted by writes
+      --interval MS          Sampling interval (default 400)
+  -v, --verbose              Expand clusters to processes
+
+Values come from /proc/PID/io. They describe process I/O requests; caching means they are not
+necessarily physical device throughput. All ordinary process and socket filters compose.";
 
 const HELP_NET: &str = "\
 pq network queries
@@ -154,6 +178,7 @@ JSON includes generated_at_unix_ms and sample_interval_ms.";
 
 static HELP_TOPICS: &[Topic] = &[
     Topic { name: "process", aliases: &["proc", "metrics"], text: HELP_PROCESS },
+    Topic { name: "io", aliases: &["read", "write"], text: HELP_IO },
     Topic { name: "net", aliases: &["network", "ports"], text: HELP_NET },
     Topic { name: "filters", aliases: &["filter"], text: HELP_FILTERS },
     Topic { name: "kill", aliases: &["signal"], text: HELP_KILL },
@@ -162,6 +187,7 @@ static HELP_TOPICS: &[Topic] = &[
 
 static HELP_CONTEXTS: &[(&[&str], &str)] = &[
     (&["--kill", "--dry-run", "--signal", "--grace", "--sigkill", "-9"], "kill"),
+    (&["--io", "--read", "--write"], "io"),
     (&["--net", "--port", "--listen", "--remote-port", "--tcp", "--udp", "--state", "--public", "--services", "--resolve"], "net"),
     (&["--user", "--pid", "--min-cpu", "--min-memory"], "filters"),
     (&["--json", "--jsonl", "--no-color"], "output"),
@@ -197,6 +223,12 @@ struct Args {
     #[arg(short = 's', long, help_heading = "Metric (default report)")] swap: bool,
     /// Sort and chart by CPU (default)
     #[arg(short = 'c', long, help_heading = "Metric (default report)")] cpu: bool,
+    /// Report process read/write rates, sorted by combined I/O
+    #[arg(long, conflicts_with_all = ["read", "write"], help_heading = "Process I/O")] io: bool,
+    /// Report process I/O sorted by read rate
+    #[arg(long, conflicts_with_all = ["io", "write"], help_heading = "Process I/O")] read: bool,
+    /// Report process I/O sorted by write rate
+    #[arg(long, conflicts_with_all = ["io", "read"], help_heading = "Process I/O")] write: bool,
     /// Report TCP/UDP connections instead of cpu/mem clusters (sorted by traffic, then
     /// connection count; metric flags do not change the sort). World-exposed listeners are
     /// highlighted
@@ -248,9 +280,10 @@ fn main() {
         std::process::exit(1);
     });
     match (&plan.action, plan.view) {
-        (Action::Kill(options), View::Network) => { run_net_kill(&plan, options); return; }
-        (Action::Kill(options), View::Processes) => { run_kill(options.pattern.as_deref().unwrap(), &plan, options); return; }
+        (Action::Kill(options), _) if plan.sockets.requested() => { run_net_kill(&plan, options); return; }
+        (Action::Kill(options), _) => { run_kill(options.pattern.as_deref().unwrap(), &plan, options); return; }
         (Action::Report, View::Network) => { run_net_report(&plan); return; }
+        (Action::Report, View::Io) => { run_io_report(&plan); return; }
         (Action::Report, View::Processes) => {}
     }
 
@@ -446,6 +479,65 @@ fn run_net_report(plan: &QueryPlan) {
             eprintln!("pq: error writing output: {}", e);
             std::process::exit(1);
         }
+    }
+}
+
+/// Process-I/O report. Process selectors establish the base set; when socket selectors are
+/// present their attributed owner PIDs are intersected with it instead of forcing a net view.
+fn run_io_report(plan: &QueryPlan) {
+    use std::collections::HashSet;
+
+    let before_procs = proc::snapshot();
+    let before_io = io_report::snapshot(before_procs.iter().map(|p| p.pid));
+    std::thread::sleep(Duration::from_millis(plan.interval_ms));
+    let current = proc::snapshot();
+    let after_io = io_report::snapshot(current.iter().map(|p| p.pid));
+    let procs = proc::cpu_percent(&before_procs, &current, plan.interval_ms as f64 / 1000.0);
+
+    let selected: Vec<proc::Proc> = procs.iter().filter(|p| process_matches(p, &plan.process)).cloned().collect();
+    let mut base = cluster::cluster(&selected, plan.metric);
+    if let Some(pattern) = &plan.process.pattern {
+        let needle = pattern.to_lowercase();
+        base.retain(|c| c.identity.to_lowercase().contains(&needle)
+            || c.members.iter().any(|m| m.cmd.to_lowercase().contains(&needle) || m.comm.to_lowercase().contains(&needle)));
+    }
+    base.retain(|c| plan.process.min_cpu.is_none_or(|min| c.cpu >= min)
+        && plan.process.min_memory.is_none_or(|min| c.rss >= min));
+    let mut allowed: HashSet<i32> = base.iter().flat_map(|c| c.members.iter().map(|m| m.pid)).collect();
+
+    if plan.sockets.selects_owners() {
+        let (attributed, tables_read) = sample_sockets(&procs);
+        if tables_read == 0 {
+            eprintln!("pq: cannot read /proc/net for socket selection (is this Linux?)");
+            std::process::exit(1);
+        }
+        let sockets = net::filter_socks(select_sockets(attributed, plan), plan.sockets.local_port, plan.sockets.listen);
+        let owners: HashSet<i32> = sockets.into_iter().filter_map(|(_, pid)| pid).collect();
+        allowed.retain(|pid| owners.contains(pid));
+    }
+
+    let mut clusters = io_report::aggregate(&procs, &allowed, &before_io, &after_io,
+        plan.interval_ms as f64 / 1000.0, plan.io_metric);
+    let targeted = plan.process.pattern.is_some() || plan.process.user.is_some() || plan.process.pid.is_some()
+        || plan.sockets.selects_owners();
+    if !targeted {
+        clusters.retain(|c| c.read_bps + c.write_bps > 0);
+    }
+    let opts = io_report::IoOpts {
+        metric: plan.io_metric, top: plan.output.top.unwrap_or(15), verbose: plan.output.verbose,
+        compact_json: plan.output.compact_json(), sample_interval_ms: plan.interval_ms,
+        colors: std::io::stdout().is_terminal() && !plan.output.machine() && !plan.output.no_color,
+    };
+    let mut out = BufWriter::new(io::stdout());
+    let result = if plan.output.machine() {
+        io_report::write_json(&mut out, &clusters, &opts)
+    } else {
+        io_report::write_text(&mut out, &clusters, &opts)
+    }.and_then(|_| out.flush());
+    match result {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
+        Err(e) => { eprintln!("pq: error writing output: {e}"); std::process::exit(1); }
     }
 }
 

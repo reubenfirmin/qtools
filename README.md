@@ -20,7 +20,7 @@ $ dq                            # what's using disk space in the current directo
 ```
 
 Help is deliberately layered: `pq --help` and `dq --help` are short orientation pages, with focused
-reference under `pq help process|net|filters|kill|output` and `dq help scan|output`. Contextual forms
+reference under `pq help process|io|net|filters|kill|output` and `dq help scan|output`. Contextual forms
 such as `pq --net --help`, `pq --kill --help`, and `dq --json --help` open the matching topic directly.
 
 `sudo ./install.sh` installs system-wide (to `/usr/local/bin`) instead of just for your user.
@@ -58,6 +58,7 @@ one `chrome (N procs)` (separate profiles/instances are told apart). `-v` expand
 member processes.
 
     pq --cpu / --memory / --swap   # sort/chart metric (default: cpu)
+    pq --io / --read / --write      # process I/O rates (combined/read/write sort)
     pq -n N                          # clusters to show (default 15)
     pq -v                             # expand clusters (processes; connections in --net mode)
     pq --interval MS                   # CPU sample interval (default 400ms)
@@ -120,6 +121,22 @@ apply in network mode. `--json` is pretty-printed; `--jsonl` emits the same snap
 line for append-only logs. Both include `generated_at_unix_ms` and `sample_interval_ms`. `-n` limits
 clusters in machine output just as it does in the human report. Use `--no-color` to force the plain
 text renderer on an interactive terminal.
+
+### pq --io: who is reading or writing?
+
+Samples `read_bytes` and `write_bytes` from `/proc/<pid>/io` over `--interval`, then aggregates the
+rates using pq's normal resolved process identities. `--io` sorts by combined throughput; `--read`
+and `--write` select the same report sorted by that direction. Process and socket selectors compose:
+
+    pq --io
+    pq --write postgres
+    pq --user postgres --io
+    pq --port 5432 --io
+    pq --remote-port 443 --read
+    pq --io --json
+
+These are bytes accounted to process I/O by the kernel. Caching and delayed writeback mean they are
+not necessarily equal to instantaneous physical-device throughput.
 
 ### pq --port N --kill: free up a port
 

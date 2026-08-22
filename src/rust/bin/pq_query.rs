@@ -18,6 +18,8 @@ pub struct ProcessSelection {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SocketSelection {
+    pub network_requested: bool,
+    pub owner_selection_requested: bool,
     pub local_port: Option<u16>,
     pub remote_port: Option<u16>,
     pub listen: bool,
@@ -28,8 +30,19 @@ pub struct SocketSelection {
     pub resolve: bool,
 }
 
+impl SocketSelection {
+    pub fn requested(&self) -> bool {
+        self.network_requested
+    }
+
+    pub fn selects_owners(&self) -> bool { self.owner_selection_requested }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum View { Processes, Network }
+pub enum View { Processes, Network, Io }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IoMetric { Combined, Read, Write }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KillOptions {
@@ -53,6 +66,7 @@ pub struct QueryPlan {
     pub action: Action,
     pub output: OutputOptions,
     pub metric: Metric,
+    pub io_metric: IoMetric,
     pub interval_ms: u64,
 }
 
@@ -61,6 +75,9 @@ impl QueryPlan {
         let socket_selection_requested = args.net || args.port.is_some() || args.listen || args.remote_port.is_some()
             || args.tcp || args.udp || args.state.is_some() || args.public_only || args.services || args.resolve;
         let sockets = SocketSelection {
+            network_requested: socket_selection_requested,
+            owner_selection_requested: args.net || args.port.is_some() || args.listen || args.remote_port.is_some()
+                || args.tcp || args.udp || args.state.is_some() || args.public_only,
             local_port: args.port,
             remote_port: args.remote_port,
             listen: args.listen,
@@ -96,8 +113,10 @@ impl QueryPlan {
             }
         };
         let metric = if args.swap { Metric::Swap } else if args.memory { Metric::Memory } else { Metric::Cpu };
-        let view = if socket_selection_requested { View::Network } else { View::Processes };
-        Ok(Self { process, sockets, view, action, output, metric, interval_ms: args.interval })
+        let io_metric = if args.read { IoMetric::Read } else if args.write { IoMetric::Write } else { IoMetric::Combined };
+        let view = if args.io || args.read || args.write { View::Io }
+            else if socket_selection_requested { View::Network } else { View::Processes };
+        Ok(Self { process, sockets, view, action, output, metric, io_metric, interval_ms: args.interval })
     }
 }
 
@@ -134,5 +153,18 @@ mod tests {
         assert!(QueryPlan::from_args(&args).is_err());
         let p = plan(&["pq", "--port", "5432", "--kill"]);
         assert!(matches!(p.action, Action::Kill(KillOptions { pattern: None, .. })));
+    }
+
+    #[test]
+    fn explicit_io_view_wins_while_socket_selector_is_retained() {
+        let p = plan(&["pq", "--port", "5432", "--io"]);
+        assert_eq!(p.view, View::Io);
+        assert_eq!(p.sockets.local_port, Some(5432));
+        assert!(p.sockets.selects_owners());
+        assert_eq!(p.io_metric, IoMetric::Combined);
+
+        let p = plan(&["pq", "--remote-port", "443", "--write"]);
+        assert_eq!(p.view, View::Io);
+        assert_eq!(p.io_metric, IoMetric::Write);
     }
 }

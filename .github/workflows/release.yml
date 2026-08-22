@@ -96,14 +96,17 @@ jobs:
           printf '{"version":"%s","tag":"v%s"}\n' \
             "${{ needs.validate.outputs.version }}" "${{ needs.validate.outputs.version }}" > version.json
       - name: Attach artifacts to the GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: |
-            repo/Qtools-*.AppImage
-            repo/Qtools-*.AppImage.zsync
-            repo/SHA256SUMS
-            repo/version.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            repo/Qtools-*.AppImage \
+            repo/Qtools-*.AppImage.zsync \
+            repo/SHA256SUMS \
+            repo/version.json \
+            --verify-tag \
+            --generate-notes \
+            --title "qtools ${{ needs.validate.outputs.version }}"
       - name: Publish the stable AppImage channel to Cloudflare Pages
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

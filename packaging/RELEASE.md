@@ -1,6 +1,6 @@
 # Releasing qtools
 
-Qtools publishes signed, updateable AppImages through GitHub Releases and the stable repository at
+Qtools publishes updateable AppImages through GitHub Releases and the stable repository at
 `https://repo.qtools.sh/`. The website is maintained independently in the sibling `qtools-site`
 repository and deployed to `https://qtools.sh/`.
 
@@ -8,16 +8,11 @@ repository and deployed to `https://qtools.sh/`.
 
 1. Create a Cloudflare Pages project named `qtools-repo` and attach `repo.qtools.sh`.
 2. Create a GitHub environment named `release` and require approval if desired.
-3. Generate a qtools-specific GPG signing key offline. Keep its primary/private material offline.
-4. Add an exportable CI signing subkey as the `APPIMAGE_GPG_PRIVATE_KEY` environment secret.
-5. Add narrowly scoped `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` environment secrets.
-6. Export and commit only the public key as `packaging/appimage/qtools-release-key.asc`.
+3. Add narrowly scoped `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` environment secrets.
 
-The release workflow deliberately refuses to run without that public-key file. It publishes the
-file beside the AppImages and checksums so users can verify releases without trusting the website.
-
-The Cloudflare token needs permission only to deploy the `qtools-repo` Pages project. No signing key,
-passphrase, Cloudflare token, or account credential belongs in Git.
+The Cloudflare token needs permission only to deploy the `qtools-repo` Pages project. No token or
+account credential belongs in Git. GitHub creates keyless build-provenance attestations through OIDC;
+there is no persistent release-signing key to store or rotate.
 
 ## Release
 
@@ -34,8 +29,15 @@ git push origin "v$version"
 ```
 
 The tag workflow validates the version, tests, builds x86-64 and ARM64 AppImages, embeds the stable
-zsync update URLs, signs the images, creates the GitHub Release, and atomically deploys a new Pages
-snapshot. GitHub Releases retain versioned history; `repo.qtools.sh` is the stable update channel.
+zsync update URLs, creates keyless GitHub build-provenance attestations, creates the GitHub Release,
+and atomically deploys a new Pages snapshot. GitHub Releases retain versioned history;
+`repo.qtools.sh` is the stable update channel.
+
+Users can verify a downloaded binary against the repository and release workflow:
+
+```sh
+gh attestation verify Qtools-x86_64.AppImage --repo reubenfirmin/qtools
+```
 
 ## Local packaging check
 

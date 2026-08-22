@@ -5,7 +5,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   validate:
@@ -21,7 +21,6 @@ jobs:
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
           test -n "$version"
           test "${GITHUB_REF_NAME}" = "v${version}"
-          test -s packaging/appimage/qtools-release-key.asc
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -33,6 +32,10 @@ jobs:
   appimage:
     needs: validate
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       matrix:
         include:
@@ -58,15 +61,15 @@ jobs:
           chmod +x appimagetool.AppImage
           ./appimagetool.AppImage --appimage-extract >/dev/null
           mv squashfs-root appimagetool-root
-      - name: Import the AppImage signing key
-        env:
-          APPIMAGE_GPG_PRIVATE_KEY: ${{ secrets.APPIMAGE_GPG_PRIVATE_KEY }}
-        run: printf '%s' "$APPIMAGE_GPG_PRIVATE_KEY" | gpg --batch --import
-      - name: Build the signed, updateable AppImage
+      - name: Build the updateable AppImage
         run: |
           mkdir -p dist
           packaging/appimage/build.sh "${{ matrix.target }}" "${{ matrix.arch }}" \
             "${{ needs.validate.outputs.version }}" "$PWD/appimagetool-root/AppRun" "$PWD/dist"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/Qtools-${{ matrix.arch }}.AppImage
       - uses: actions/upload-artifact@v4
         with:
           name: qtools-appimage-${{ matrix.arch }}
@@ -77,6 +80,8 @@ jobs:
     needs: [validate, appimage]
     runs-on: ubuntu-22.04
     environment: release
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -84,17 +89,12 @@ jobs:
           pattern: qtools-appimage-*
           path: repo
           merge-multiple: true
-      - name: Generate and sign checksums
+      - name: Generate checksums
         working-directory: repo
-        env:
-          APPIMAGE_GPG_PRIVATE_KEY: ${{ secrets.APPIMAGE_GPG_PRIVATE_KEY }}
         run: |
-          printf '%s' "$APPIMAGE_GPG_PRIVATE_KEY" | gpg --batch --import
           sha256sum Qtools-*.AppImage Qtools-*.AppImage.zsync > SHA256SUMS
-          gpg --batch --yes --armor --detach-sign SHA256SUMS
           printf '{"version":"%s","tag":"v%s"}\n' \
             "${{ needs.validate.outputs.version }}" "${{ needs.validate.outputs.version }}" > version.json
-          cp ../packaging/appimage/qtools-release-key.asc .
       - name: Attach artifacts to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -103,9 +103,7 @@ jobs:
             repo/Qtools-*.AppImage
             repo/Qtools-*.AppImage.zsync
             repo/SHA256SUMS
-            repo/SHA256SUMS.asc
             repo/version.json
-            repo/qtools-release-key.asc
       - name: Publish the stable AppImage channel to Cloudflare Pages
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

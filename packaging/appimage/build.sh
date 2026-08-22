@@ -32,5 +32,5 @@ install -m 0644 "$repo_root/packaging/appimage/sh.qtools.Qtools.svg" "$appdir/us
 printf '%s\n' "$version" > "$appdir/usr/share/qtools/VERSION"
 
 update_url="zsync|https://repo.qtools.sh/Qtools-$arch.AppImage.zsync"
-(cd "$output_dir" && ARCH=$arch "$appimagetool" --no-appstream -u "$update_url" --sign "$appdir" "$output")
+(cd "$output_dir" && ARCH=$arch "$appimagetool" --no-appstream -u "$update_url" "$appdir" "$output")
 echo "Built $output"

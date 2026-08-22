@@ -10,7 +10,7 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ValueKind { Bytes, Count }
+pub enum ValueKind { Bytes, Count, Score, Percent }
 
 #[derive(Debug, Serialize)]
 pub struct Row {
@@ -76,6 +76,9 @@ impl Report {
 
     fn write_graphics<W: Write>(&self, out: &mut W, options: &Options, context: RenderContext) -> io::Result<()> {
         self.write_header(out, context)?;
+        if matches!(self.value_kind, ValueKind::Score | ValueKind::Percent) {
+            return self.write_rows(out, options, context, false);
+        }
         let items: Vec<(String, u64)> = self.rows.iter().map(|row| (row.identity.clone(), row.value)).collect();
         let total = items.iter().map(|(_, value)| *value).sum();
         if total == 0 { return self.write_rows(out, options, context, false); }
@@ -104,7 +107,11 @@ impl Report {
 }
 
 fn value_text(value: u64, kind: ValueKind) -> String {
-    match kind { ValueKind::Bytes => human_plain(value), ValueKind::Count => value.to_string() }
+    match kind {
+        ValueKind::Bytes => human_plain(value),
+        ValueKind::Count | ValueKind::Score => value.to_string(),
+        ValueKind::Percent => format!("{value}%"),
+    }
 }
 
 #[cfg(test)]

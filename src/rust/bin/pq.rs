@@ -2,7 +2,7 @@
 //! rendering primitives (style/donut/term/graphics/chart) from the qtools library.
 mod proc; mod identity; mod cluster; mod report; mod kill; mod net; mod net_report; mod netdiag; mod pq_query; mod io_report;
 mod fd_report; mod blocked_report; mod pss_report; mod unix_report;
-mod ranked_report; mod tree_report;
+mod ranked_report; mod tree_report; mod oom_report; mod limits_report;
 
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -154,6 +154,28 @@ Examples:
 Reads /proc/PID/smaps_rollup and reports PSS plus private/shared/anonymous memory. This is explicit
 because it is more expensive and permission-sensitive than the default RSS report.";
 
+const HELP_OOM: &str = "\
+pq out-of-memory kill preference
+
+Examples:
+  pq --oom                   Rank processes by current kernel OOM score
+  pq postgres --oom          Inspect matching processes
+  pq --pid 1820 --oom -v     Include adjustment details
+
+The score is the kernel's current relative victim preference, not a probability or guarantee.
+Lower scores are less preferred; an adjustment of -1000 protects a process.";
+
+const HELP_LIMITS: &str = "\
+pq process resource limits
+
+Examples:
+  pq --limits                Show processes at least 75% into a measurable finite limit
+  pq postgres --limits       Show all measurable finite limits for matching processes
+  pq --pid 1820 --limits -v  Include soft/hard limit details
+
+Measured resources include open files, address space, locked memory, and the real user's
+process/thread allowance. Unlimited or non-measurable limits are not assigned fake utilization.";
+
 const HELP_UNIX: &str = "\
 pq Unix-domain sockets
 
@@ -235,6 +257,8 @@ static HELP_TOPICS: &[Topic] = &[
     Topic { name: "files", aliases: &["fds", "deleted", "mount", "file"], text: HELP_FILES },
     Topic { name: "blocked", aliases: &["wait", "stuck"], text: HELP_BLOCKED },
     Topic { name: "pss", aliases: &["smaps"], text: HELP_PSS },
+    Topic { name: "oom", aliases: &["oom-score"], text: HELP_OOM },
+    Topic { name: "limits", aliases: &["ulimit", "rlimit"], text: HELP_LIMITS },
     Topic { name: "unix", aliases: &["unix-sockets"], text: HELP_UNIX },
     Topic { name: "net", aliases: &["network", "ports"], text: HELP_NET },
     Topic { name: "filters", aliases: &["filter"], text: HELP_FILTERS },
@@ -248,6 +272,8 @@ static HELP_CONTEXTS: &[(&[&str], &str)] = &[
     (&["--deleted", "--fds", "--mount", "--file"], "files"),
     (&["--blocked"], "blocked"),
     (&["--pss"], "pss"),
+    (&["--oom"], "oom"),
+    (&["--limits"], "limits"),
     (&["--unix"], "unix"),
     (&["--net", "--port", "--listen", "--remote-port", "--tcp", "--udp", "--state", "--public", "--services", "--resolve"], "net"),
     (&["--user", "--pid", "--min-cpu", "--min-memory"], "filters"),
@@ -304,6 +330,10 @@ struct Args {
     #[arg(long, help_heading = "Process internals")] blocked: bool,
     /// Report proportional memory from smaps_rollup
     #[arg(long, help_heading = "Process internals")] pss: bool,
+    /// Rank processes by the kernel's current out-of-memory kill preference
+    #[arg(long, help_heading = "Process internals")] oom: bool,
+    /// Report measurable finite process resource limits
+    #[arg(long, help_heading = "Process internals")] limits: bool,
     /// Report Unix-domain sockets, optionally matching a socket path
     #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "PATH", help_heading = "Net mode")] unix: Option<String>,
     /// Report TCP/UDP connections instead of cpu/mem clusters (sorted by traffic, then
@@ -361,7 +391,7 @@ fn main() {
         (Action::Kill(options), _) => { run_kill(options.pattern.as_deref().unwrap(), &plan, options); return; }
         (Action::Report, View::Network) => { run_net_report(&plan); return; }
         (Action::Report, View::Io) => { run_io_report(&plan); return; }
-        (Action::Report, View::Deleted | View::Fds | View::Holders | View::Blocked | View::Pss | View::Unix) => {
+        (Action::Report, View::Deleted | View::Fds | View::Holders | View::Blocked | View::Pss | View::Oom | View::Limits | View::Unix) => {
             run_diagnostic_report(&plan); return;
         }
         (Action::Report, View::Processes) => {}
@@ -631,11 +661,15 @@ fn run_diagnostic_report(plan: &QueryPlan) {
             normalized_file.as_deref(), normalized_mount.as_deref()),
         View::Blocked => blocked_report::build(&procs, &allowed),
         View::Pss => pss_report::build(&procs, &allowed),
+        View::Oom => oom_report::build(&procs, &allowed),
+        View::Limits => limits_report::build(&procs, &allowed,
+            plan.output.verbose || plan.process.pid.is_some() || plan.process.pattern.is_some()),
         View::Unix => unix_report::build(&procs, &allowed, plan.sockets.unix_path.as_deref()),
         _ => unreachable!("non-diagnostic view routed to diagnostic renderer"),
     };
     let context = RenderContext::detect(plan.output);
     let show_details = plan.output.verbose || matches!(plan.view, View::Holders | View::Blocked)
+        || (plan.view == View::Limits && (plan.process.pid.is_some() || plan.process.pattern.is_some()))
         || (plan.view == View::Unix && plan.sockets.unix_path.is_some());
     let options = ranked_report::Options { top: plan.output.top.unwrap_or(15), verbose: show_details,
         sample_interval_ms: Some(plan.interval_ms) };

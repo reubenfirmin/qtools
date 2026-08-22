@@ -42,7 +42,7 @@ impl SocketSelection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum View { Processes, Network, Io, Deleted, Fds, Holders, Blocked, Pss, Unix }
+pub enum View { Processes, Network, Io, Deleted, Fds, Holders, Blocked, Pss, Oom, Limits, Unix }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoMetric { Combined, Read, Write }
@@ -120,15 +120,18 @@ impl QueryPlan {
         };
         let metric = if args.swap { Metric::Swap } else if args.memory { Metric::Memory } else { Metric::Cpu };
         let io_metric = if args.read { IoMetric::Read } else if args.write { IoMetric::Write } else { IoMetric::Combined };
-        let explicit = [args.io || args.read || args.write, args.deleted, args.fds, args.blocked, args.pss, args.unix.is_some()];
+        let explicit = [args.io || args.read || args.write, args.deleted, args.fds, args.blocked, args.pss,
+            args.oom, args.limits, args.unix.is_some()];
         if explicit.into_iter().filter(|active| *active).count() > 1 {
-            return Err("choose only one report view (--io/--read/--write, --deleted, --fds, --blocked, --pss, or --unix)".into());
+            return Err("choose only one report view (--io/--read/--write, --deleted, --fds, --blocked, --pss, --oom, --limits, or --unix)".into());
         }
         let view = if args.io || args.read || args.write { View::Io }
             else if args.deleted { View::Deleted }
             else if args.fds { View::Fds }
             else if args.blocked { View::Blocked }
             else if args.pss { View::Pss }
+            else if args.oom { View::Oom }
+            else if args.limits { View::Limits }
             else if args.unix.is_some() { View::Unix }
             else if args.mount.is_some() || args.file.is_some() { View::Holders }
             else if socket_selection_requested { View::Network } else { View::Processes };
@@ -194,6 +197,8 @@ mod tests {
         assert_eq!(plan(&["pq", "--fds"]).view, View::Fds);
         assert_eq!(plan(&["pq", "--blocked"]).view, View::Blocked);
         assert_eq!(plan(&["pq", "--pss"]).view, View::Pss);
+        assert_eq!(plan(&["pq", "--oom"]).view, View::Oom);
+        assert_eq!(plan(&["pq", "--limits"]).view, View::Limits);
         assert_eq!(plan(&["pq", "--unix"]).view, View::Unix);
         let p = plan(&["pq", "--mount", "/mnt/data", "--fds"]);
         assert_eq!(p.view, View::Fds);

@@ -158,6 +158,8 @@ Every standalone view uses the normal graphics/text/JSON rendering pipeline.
     pq --fds                     # descriptor counts and classifications
     pq --blocked                 # tasks in uninterruptible D state + wchan
     pq --pss chrome              # proportional/private/shared/anonymous memory
+    pq --oom                     # relative kernel OOM-kill preference
+    pq --limits                  # finite resource limits nearing exhaustion
     pq --file /var/log/app.log   # who holds, maps, executes, or uses this path
     pq --mount /mnt/data         # what prevents this tree/filesystem being released
     pq --mount /mnt/data --fds   # FD report restricted to those holders
@@ -167,6 +169,11 @@ Every standalone view uses the normal graphics/text/JSON rendering pipeline.
 device/inode within an identity. `--file` and `--mount` examine descriptors, cwd, root, executable,
 and file-backed mappings. `--pss` reads `smaps_rollup` only when explicitly requested because it is
 more expensive and permission-sensitive.
+
+`--oom` uses the kernel's current `oom_score` and `oom_score_adj`; it reports relative victim
+preference rather than predicting a kill. `--limits` pairs finite soft limits with live usage where
+Linux exposes a meaningful measurement. Machine-wide output shows utilization of 75% or higher;
+a process pattern, `--pid`, or `-v` shows all measurable finite limits.
 
 ### pq Unix-domain sockets
 

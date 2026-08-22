@@ -21,7 +21,7 @@ qtools $version
 
 Usage:
   $invoked --install       Install qtools, dq, and pq for this user
-  qtools update            Update through the standard AppImage updater
+  qtools update            Update qtools from the stable AppImage channel
   qtools uninstall         Remove the user installation
   qtools version           Show the installed version
 
@@ -71,12 +71,59 @@ install_image() {
 
 update_image() {
     current=${APPIMAGE:?AppImage runtime did not set APPIMAGE}
-    if ! command -v appimageupdatetool >/dev/null 2>&1; then
-        echo "qtools: appimageupdatetool is required for standard zsync updates" >&2
-        echo "Get AppImageUpdate from https://github.com/AppImageCommunity/AppImageUpdate" >&2
+    if command -v appimageupdatetool >/dev/null 2>&1; then
+        exec appimageupdatetool "$current"
+    fi
+
+    case "$(uname -m)" in
+        x86_64|amd64) arch=x86_64 ;;
+        aarch64|arm64) arch=aarch64 ;;
+        *) echo "qtools: no AppImage release is available for $(uname -m)" >&2; exit 1 ;;
+    esac
+
+    asset=Qtools-$arch.AppImage
+    base_url=https://repo.qtools.sh
+    current_dir=$(dirname -- "$current")
+    checksums=
+    downloaded=$(mktemp "$current_dir/.qtools.AppImage.XXXXXX")
+    trap 'rm -f "$downloaded" "$checksums"' EXIT HUP INT TERM
+    checksums=$(mktemp "$current_dir/.qtools.SHA256SUMS.XXXXXX")
+
+    if command -v curl >/dev/null 2>&1; then
+        fetch() { curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error --output "$2" "$1"; }
+    elif command -v wget >/dev/null 2>&1; then
+        fetch() { wget --https-only --quiet --output-document="$2" "$1"; }
+    else
+        echo "qtools: the full update requires curl or wget" >&2
         exit 1
     fi
-    exec appimageupdatetool "$current"
+
+    echo "appimageupdatetool not found; downloading the full $asset"
+    fetch "$base_url/SHA256SUMS" "$checksums"
+    fetch "$base_url/$asset" "$downloaded"
+
+    expected=$(awk -v name="$asset" '$2 == name || $2 == "*" name { print $1; exit }' "$checksums")
+    case "$expected" in
+        *[!0-9a-fA-F]*|'')
+            echo "qtools: SHA256SUMS does not contain a valid checksum for $asset" >&2
+            exit 1
+            ;;
+    esac
+    if [ "${#expected}" -ne 64 ]; then
+        echo "qtools: SHA256SUMS does not contain a valid checksum for $asset" >&2
+        exit 1
+    fi
+    actual=$(sha256sum "$downloaded" | awk '{print $1}')
+    if [ "$actual" != "$expected" ]; then
+        echo "qtools: checksum verification failed for $asset" >&2
+        exit 1
+    fi
+
+    chmod 0755 "$downloaded"
+    mv -f "$downloaded" "$current"
+    rm -f "$checksums"
+    trap - EXIT HUP INT TERM
+    echo "Updated qtools to the latest stable AppImage"
 }
 
 uninstall_image() {

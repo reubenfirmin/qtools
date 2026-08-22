@@ -39,9 +39,9 @@ dq --help
 
 This copies the AppImage to `~/.local/bin/qtools.AppImage` and creates the `qtools`, `pq`, and `dq`
 symlinks there. It does not require root or pipe downloaded code into a shell. `qtools update` uses
-the standard AppImage zsync updater when `appimageupdatetool` is installed; `qtools uninstall`
-removes the per-user installation. Maintainer instructions are in
-[`packaging/RELEASE.md`](packaging/RELEASE.md).
+zsync when `appimageupdatetool` is available, or securely downloads and verifies the full AppImage
+from the stable repository otherwise. `qtools uninstall` removes the per-user installation.
+Maintainer instructions are in [`packaging/RELEASE.md`](packaging/RELEASE.md).
 
 ## dq (disk query)
 

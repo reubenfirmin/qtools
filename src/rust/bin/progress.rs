@@ -1,6 +1,6 @@
 use std::io::{stderr, IsTerminal, Write};
 use std::time::{Duration, Instant};
-use crate::view::human_size;
+use qtools::style::human_plain;
 
 const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const BAR_WIDTH: usize = 20;
@@ -67,7 +67,7 @@ impl Progress {
 
         let line = format!(
             "{} [{}] {:>3}%  {} dirs  {}",
-            FRAMES[self.frame], bar, pct, self.dirs, human_size(self.bytes)
+            FRAMES[self.frame], bar, pct, self.dirs, human_plain(self.bytes)
         );
 
         let mut err = stderr();

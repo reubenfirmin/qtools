@@ -20,7 +20,7 @@ $ dq                            # what's using disk space in the current directo
 ```
 
 Help is deliberately layered: `pq --help` and `dq --help` are short orientation pages, with focused
-reference under `pq help process|io|net|filters|kill|output` and `dq help scan|output`. Contextual forms
+reference under pq's report topics and `dq help views|filters|scan|output`. Contextual forms
 such as `pq --net --help`, `pq --kill --help`, and `dq --json --help` open the matching topic directly.
 
 `sudo ./install.sh` installs system-wide (to `/usr/local/bin`) instead of just for your user.
@@ -29,23 +29,29 @@ such as `pq --net --help`, `pq --kill --help`, and `dq --json --help` open the m
 
 ![dq](./dq.png)
 
-Recurses across a thread pool (10x+ faster than `du`), skips virtual filesystems (`/proc`, `/sys`) and
-other-device mounts, sorts by size, formats human-readable by default. Only shows directories using at
-least 1% of the tree (`-v`/`-V` to see more). When files sitting directly in a scanned directory add up
-to a meaningful share, it breaks that "in this dir" total down into its biggest files. Renders donut
-charts on graphics-capable terminals (kitty, Ghostty, iTerm2, WezTerm, Konsole, sixel) or bar charts
-elsewhere; `QTOOLS_DEBUG=1` shows what was detected. Colors drop automatically when piped/redirected.
+Scans typed file and directory facts across a thread pool, stays on the starting filesystem by
+default, skips symlinks, and deduplicates hard links by device/inode. Allocated filesystem blocks are
+the default accounting mode; `--apparent` reports logical lengths instead. Every view uses additive
+groups, rich-terminal donuts or proportional text bars, and the same filter/accounting pipeline.
 
-    dq [dir]              # scan dir (default: cwd)
-    dq --threads N         # thread count
-    dq -v / -V              # verbose / extra verbose (show more/all directories)
-    dq --json                # machine-readable output
-    dq --noprogress           # skip the progress indicator
+    dq [dir]                         # directory groups, depth 1
+    dq --files --top 30 /var         # largest files recursively
+    dq --owners /srv                 # space grouped by file owner
+    dq --age /data                   # space grouped by modification age
+    dq --apparent /data              # logical rather than allocated size
+    dq --exclude cache --exclude '*.tmp' .
+    dq --files --older-than 90d --min-size 1G /var
+    dq --depth 2 --min-percent 0.5 /
+    dq --cross-filesystems /mnt
+    dq --errors /var                 # list unreadable paths
+    dq --json /var | jq .rows
+    dq --jsonl --files /var
 
 Examples:
 
     dq /tmp
-    dq -v --threads 50 /tmp
+    dq --all --threads 50 /tmp
+    dq --allocated --files --older-than 30d --top 20 /var
     dq --json / > sizes.json
 
 ## pq (process query)

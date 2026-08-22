@@ -142,6 +142,14 @@ plain text.
 
 ### pq process internals and open resources
 
+Use `pq --tree` for a static, aligned parent/child process table. Filters select the interesting
+processes; otherwise-unselected ancestors remain as dim context. Siblings follow the active CPU,
+memory, or swap ordering. JSON exposes flat nodes with parent IDs and depths.
+
+    pq --tree
+    pq --memory --tree postgres
+    pq --tree --json
+
 These views use the same process, socket-owner, user, PID, and path selectors as the other reports.
 Every standalone view uses the normal graphics/text/JSON rendering pipeline.
 

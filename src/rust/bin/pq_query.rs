@@ -71,6 +71,7 @@ pub struct QueryPlan {
     pub metric: Metric,
     pub io_metric: IoMetric,
     pub interval_ms: u64,
+    pub tree: bool,
 }
 
 impl QueryPlan {
@@ -131,7 +132,10 @@ impl QueryPlan {
             else if args.unix.is_some() { View::Unix }
             else if args.mount.is_some() || args.file.is_some() { View::Holders }
             else if socket_selection_requested { View::Network } else { View::Processes };
-        Ok(Self { process, sockets, view, action, output, metric, io_metric, interval_ms: args.interval })
+        if args.tree && view != View::Processes {
+            return Err("--tree currently applies to the CPU/memory/swap process report".into());
+        }
+        Ok(Self { process, sockets, view, action, output, metric, io_metric, interval_ms: args.interval, tree: args.tree })
     }
 }
 
@@ -151,6 +155,7 @@ mod tests {
         assert_eq!(plan(&["pq", "--net"]).view, View::Network);
         assert_eq!(plan(&["pq", "--port", "5432"]).view, View::Network);
         assert_eq!(plan(&["pq", "--remote-port", "443"]).view, View::Network);
+        assert!(plan(&["pq", "--tree"]).tree);
     }
 
     #[test]

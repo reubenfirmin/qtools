@@ -2,7 +2,7 @@
 //! rendering primitives (style/donut/term/graphics/chart) from the qtools library.
 mod proc; mod identity; mod cluster; mod report; mod kill; mod net; mod net_report; mod netdiag; mod pq_query; mod io_report;
 mod fd_report; mod blocked_report; mod pss_report; mod unix_report;
-mod ranked_report;
+mod ranked_report; mod tree_report;
 
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -56,6 +56,7 @@ Examples:
   pq                         CPU report
   pq --memory                Sort by resident memory
   pq --swap                  Sort by swap
+  pq --tree                  Static parent/child table
   pq -v chrome               Expand matching clusters into processes
   pq -n 30 --interval 1000   Show 30 clusters, sampled for one second
 
@@ -63,6 +64,7 @@ Options:
   -c, --cpu                  Sort/chart by CPU (default)
   -m, --memory               Sort/chart by memory
   -s, --swap                 Sort/chart by swap
+      --tree                 Show processes in a parent/child table
   -v, --verbose              Expand clusters to member processes
   -n, --top N                Clusters to show (default 15)
       --interval MS          CPU sampling interval (default 400)
@@ -250,7 +252,7 @@ static HELP_CONTEXTS: &[(&[&str], &str)] = &[
     (&["--net", "--port", "--listen", "--remote-port", "--tcp", "--udp", "--state", "--public", "--services", "--resolve"], "net"),
     (&["--user", "--pid", "--min-cpu", "--min-memory"], "filters"),
     (&["--json", "--jsonl", "--no-color"], "output"),
-    (&["--cpu", "-c", "--memory", "-m", "--swap", "-s", "--verbose", "-v", "--top", "-n", "--interval"], "process"),
+    (&["--cpu", "-c", "--memory", "-m", "--swap", "-s", "--tree", "--verbose", "-v", "--top", "-n", "--interval"], "process"),
 ];
 
 #[derive(Parser, Debug)]
@@ -260,6 +262,8 @@ struct Args {
     #[arg(short = 'n', long)] top: Option<usize>,
     /// Expand clusters to their member processes (per-connection rows in --net mode)
     #[arg(short, long)] verbose: bool,
+    /// Show matching processes in a static parent/child table
+    #[arg(long, help_heading = "View")] tree: bool,
     /// CPU sample interval in milliseconds
     #[arg(long, default_value_t = 400)] interval: u64,
     /// Emit machine-readable JSON
@@ -414,8 +418,12 @@ fn main() {
         compact_json: context.compact_json(),
         sample_interval_ms: plan.interval_ms
     };
-    render::stdout("pq", |out| report::render(out, &clusters, mem_used, mem_total, swap_used,
-        swap_total, cpu_total, &core_loads, &attribution, &opts, context));
+    if plan.tree {
+        render::stdout("pq", |out| tree_report::render(out, &procs, &clusters, &opts, context));
+    } else {
+        render::stdout("pq", |out| report::render(out, &clusters, mem_used, mem_total, swap_used,
+            swap_total, cpu_total, &core_loads, &attribution, &opts, context));
+    }
 }
 
 fn show_help_and_exit() {

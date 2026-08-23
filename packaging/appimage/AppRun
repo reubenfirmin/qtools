@@ -37,7 +37,7 @@ snooze_update_notification() {
         echo "qtools: refusing symlinked state directory: $state_dir" >&2
         exit 1
     fi
-    mkdir -p -m 700 "$state_dir"
+    mkdir -p "$state_dir"
     chmod 700 "$state_dir"
     temporary=$state_dir/.update-snoozed-until.$$
     trap 'rm -f "$temporary"' EXIT HUP INT TERM

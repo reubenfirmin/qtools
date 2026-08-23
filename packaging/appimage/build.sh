@@ -11,9 +11,9 @@ arch=$2
 version=$3
 appimagetool=$4
 output_dir=$5
-repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 mkdir -p "$output_dir"
-output_dir=$(CDPATH= cd -- "$output_dir" && pwd)
+output_dir=$(CDPATH='' cd -- "$output_dir" && pwd)
 appdir=$output_dir/Qtools.AppDir
 output=$output_dir/Qtools-$arch.AppImage
 

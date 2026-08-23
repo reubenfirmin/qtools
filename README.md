@@ -37,7 +37,7 @@ pq --help
 dq --help
 ```
 
-This copies the AppImage to `~/.local/bin/qtools.AppImage` and creates the `qtools`, `pq`, and `dq`
+This moves the AppImage to `~/.local/bin/qtools.AppImage` and creates the `qtools`, `pq`, and `dq`
 symlinks there. It does not require root or pipe downloaded code into a shell. `qtools update`
 downloads the stable AppImage, checks its digest, and uses GitHub CLI (`gh`) to verify its build-
 provenance attestation against `reubenfirmin/qtools` before installation. `qtools uninstall` removes

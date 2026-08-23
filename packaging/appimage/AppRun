@@ -71,7 +71,11 @@ install_image() {
     mkdir -p "$bin_dir"
     temporary=$bin_dir/.qtools.AppImage.$$
     trap 'rm -f "$temporary"' EXIT HUP INT TERM
-    cp "$source_image" "$temporary"
+    if [ "$source_image" = "$installed_image" ]; then
+        cp "$source_image" "$temporary"
+    else
+        mv "$source_image" "$temporary"
+    fi
     chmod 0755 "$temporary"
     mv -f "$temporary" "$installed_image"
     trap - EXIT HUP INT TERM
@@ -87,11 +91,6 @@ install_image() {
 
 update_image() {
     current=${APPIMAGE:?AppImage runtime did not set APPIMAGE}
-    if ! command -v gh >/dev/null 2>&1; then
-        echo "qtools: updating requires GitHub CLI (gh) to verify the release attestation" >&2
-        exit 1
-    fi
-
     case "$(uname -m)" in
         x86_64|amd64) arch=x86_64 ;;
         aarch64|arm64) arch=aarch64 ;;
@@ -101,19 +100,47 @@ update_image() {
     asset=Qtools-$arch.AppImage
     base_url=https://repo.qtools.sh
     current_dir=$(dirname -- "$current")
+    metadata=
     checksums=
-    downloaded=$(mktemp "$current_dir/.qtools.AppImage.XXXXXX")
-    trap 'rm -f "$downloaded" "$checksums"' EXIT HUP INT TERM
-    checksums=$(mktemp "$current_dir/.qtools.SHA256SUMS.XXXXXX")
+    downloaded=
+    cleanup_update() {
+        [ -z "$metadata" ] || rm -f "$metadata"
+        [ -z "$downloaded" ] || rm -f "$downloaded"
+        [ -z "$checksums" ] || rm -f "$checksums"
+    }
+    metadata=$(mktemp "$current_dir/.qtools.version.XXXXXX")
+    trap cleanup_update EXIT HUP INT TERM
 
     if command -v curl >/dev/null 2>&1; then
         fetch() { curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error --output "$2" "$1"; }
     elif command -v wget >/dev/null 2>&1; then
         fetch() { wget --https-only --quiet --output-document="$2" "$1"; }
     else
-        echo "qtools: the full update requires curl or wget" >&2
+        echo "qtools: checking for updates requires curl or wget" >&2
         exit 1
     fi
+
+    fetch "$base_url/version.json" "$metadata"
+    latest=$(sed -n 's/^[[:space:]]*{"version":"\([^"]*\)".*/\1/p' "$metadata")
+    if [ -z "$latest" ]; then
+        echo "qtools: version.json does not contain a valid version" >&2
+        exit 1
+    fi
+    if [ "$latest" = "$version" ]; then
+        rm -f "$metadata"
+        trap - EXIT HUP INT TERM
+        rm -f "$state_dir/update-available" 2>/dev/null || true
+        echo "qtools $version is already up to date"
+        return
+    fi
+
+    if ! command -v gh >/dev/null 2>&1; then
+        echo "qtools: updating requires GitHub CLI (gh) to verify the release attestation" >&2
+        exit 1
+    fi
+
+    downloaded=$(mktemp "$current_dir/.qtools.AppImage.XXXXXX")
+    checksums=$(mktemp "$current_dir/.qtools.SHA256SUMS.XXXXXX")
 
     echo "Downloading and verifying $asset"
     fetch "$base_url/SHA256SUMS" "$checksums"
@@ -142,7 +169,7 @@ update_image() {
 
     chmod 0755 "$downloaded"
     mv -f "$downloaded" "$current"
-    rm -f "$checksums"
+    rm -f "$metadata" "$checksums"
     trap - EXIT HUP INT TERM
     rm -f "$state_dir/update-available" "$state_dir/update-snoozed-until" 2>/dev/null || true
     echo "Updated qtools to the latest stable AppImage"

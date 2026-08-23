@@ -10,7 +10,7 @@ chmod +x Qtools-x86_64.AppImage
 ./Qtools-x86_64.AppImage --install
 ```
 
-This copies the image to `~/.local/bin/qtools.AppImage` and creates relative `qtools`, `dq`, and `pq`
+This moves the image to `~/.local/bin/qtools.AppImage` and creates relative `qtools`, `dq`, and `pq`
 symlinks. It refuses to replace unrelated files or symlinks. `qtools update` downloads the full
 architecture-specific AppImage and checksum from `repo.qtools.sh`, verifies the digest and GitHub
 build-provenance attestation, and only then atomically replaces the installed image.

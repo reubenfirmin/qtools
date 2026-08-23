@@ -380,6 +380,15 @@ struct Args {
 enum NetState { Listen, Established, Bound, Other }
 
 fn main() {
+    if qtools::update::run_internal_check() { return; }
+    let invocation: Vec<String> = std::env::args().collect();
+    let machine_output = invocation.iter().any(|arg| arg == "--json" || arg == "--jsonl");
+    let colors = !invocation.iter().any(|arg| arg == "--no-color");
+    run();
+    qtools::update::after_invocation(machine_output, colors);
+}
+
+fn run() {
     show_help_and_exit();
     let args = Args::parse();
     let plan = QueryPlan::from_args(&args).unwrap_or_else(|message| {

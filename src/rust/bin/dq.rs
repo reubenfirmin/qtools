@@ -117,6 +117,15 @@ struct Args {
 }
 
 fn main() {
+    if qtools::update::run_internal_check() { return; }
+    let invocation: Vec<String> = std::env::args().collect();
+    let machine_output = invocation.iter().any(|arg| arg == "--json" || arg == "--jsonl");
+    let colors = !invocation.iter().any(|arg| arg == "--no-color");
+    run();
+    qtools::update::after_invocation(machine_output, colors);
+}
+
+fn run() {
     show_help_and_exit();
     let args = Args::parse();
     let plan = DiskQuery::from_args(&args).unwrap_or_else(|message| { eprintln!("dq: {message}"); std::process::exit(2) });

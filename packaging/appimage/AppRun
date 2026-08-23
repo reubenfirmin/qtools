@@ -5,15 +5,11 @@ appdir=${APPDIR:?AppImage runtime did not set APPDIR}
 invoked=${ARGV0:-$0}
 command_name=$(basename -- "$invoked")
 
-case "$command_name" in
-    dq|pq)
-        exec "$appdir/usr/bin/$command_name" "$@"
-        ;;
-esac
-
 version=$(cat "$appdir/usr/share/qtools/VERSION")
 bin_dir=${HOME:?HOME is not set}/.local/bin
 installed_image=$bin_dir/qtools.AppImage
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/qtools
+snooze_seconds=2592000
 
 usage() {
     cat <<EOF
@@ -22,6 +18,8 @@ qtools $version
 Usage:
   $invoked --install       Install qtools, dq, and pq for this user
   qtools update            Update qtools from the stable AppImage channel
+  qtools snooze-update-notification
+                           Hide update notices for 30 days
   qtools uninstall         Remove the user installation
   qtools version           Show the installed version
 
@@ -29,6 +27,14 @@ Direct use:
   $invoked dq [ARGS...]
   $invoked pq [ARGS...]
 EOF
+}
+
+now() { date +%s; }
+
+snooze_update_notification() {
+    mkdir -p -m 700 "$state_dir"
+    printf '%s\n' "$(( $(now) + snooze_seconds ))" > "$state_dir/update-snoozed-until"
+    echo "qtools: update notifications snoozed for 30 days"
 }
 
 link_command() {
@@ -72,7 +78,12 @@ install_image() {
 update_image() {
     current=${APPIMAGE:?AppImage runtime did not set APPIMAGE}
     if command -v appimageupdatetool >/dev/null 2>&1; then
-        exec appimageupdatetool "$current"
+        if appimageupdatetool "$current"; then
+            rm -f "$state_dir/update-available" "$state_dir/update-snoozed-until" 2>/dev/null || true
+            return 0
+        else
+            return $?
+        fi
     fi
 
     case "$(uname -m)" in
@@ -123,6 +134,7 @@ update_image() {
     mv -f "$downloaded" "$current"
     rm -f "$checksums"
     trap - EXIT HUP INT TERM
+    rm -f "$state_dir/update-available" "$state_dir/update-snoozed-until" 2>/dev/null || true
     echo "Updated qtools to the latest stable AppImage"
 }
 
@@ -137,9 +149,14 @@ uninstall_image() {
     echo "Removed the qtools user installation"
 }
 
+case "$command_name" in
+    dq|pq) exec "$appdir/usr/bin/$command_name" "$@" ;;
+esac
+
 case "${1:-}" in
     --install|install) install_image ;;
     update) update_image ;;
+    snooze-update-notification) snooze_update_notification ;;
     uninstall) uninstall_image ;;
     version|--version|-V) echo "qtools $version" ;;
     dq|pq)

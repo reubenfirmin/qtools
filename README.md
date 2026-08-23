@@ -41,6 +41,10 @@ This copies the AppImage to `~/.local/bin/qtools.AppImage` and creates the `qtoo
 symlinks there. It does not require root or pipe downloaded code into a shell. `qtools update` uses
 zsync when `appimageupdatetool` is available, or securely downloads and verifies the full AppImage
 from the stable repository otherwise. `qtools uninstall` removes the per-user installation.
+The binaries check the stable channel in the background at most once a day, after `pq` or `dq` has
+finished. When an update is found, the next interactive report ends with a one-line notice.
+Use `qtools snooze-update-notification` to hide notices for 30 days; machine-readable and piped
+output never includes them.
 Maintainer instructions are in [`packaging/RELEASE.md`](packaging/RELEASE.md).
 
 ## dq (disk query)

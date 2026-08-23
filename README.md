@@ -38,9 +38,10 @@ dq --help
 ```
 
 This copies the AppImage to `~/.local/bin/qtools.AppImage` and creates the `qtools`, `pq`, and `dq`
-symlinks there. It does not require root or pipe downloaded code into a shell. `qtools update` uses
-zsync when `appimageupdatetool` is available, or securely downloads and verifies the full AppImage
-from the stable repository otherwise. `qtools uninstall` removes the per-user installation.
+symlinks there. It does not require root or pipe downloaded code into a shell. `qtools update`
+downloads the stable AppImage, checks its digest, and uses GitHub CLI (`gh`) to verify its build-
+provenance attestation against `reubenfirmin/qtools` before installation. `qtools uninstall` removes
+the per-user installation.
 The binaries check the stable channel in the background at most once a day, after `pq` or `dq` has
 finished. When an update is found, the next interactive report ends with a one-line notice.
 Use `qtools snooze-update-notification` to hide notices for 30 days; machine-readable and piped

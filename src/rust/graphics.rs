@@ -44,6 +44,13 @@ pub fn supported() -> bool {
         restore_tty_mode(mode);
     }
 
+    interpret_probe(outcome, debug)
+}
+
+fn interpret_probe(
+    outcome: Result<(viuer::KittySupport, bool, bool), std::sync::mpsc::RecvTimeoutError>,
+    debug: bool,
+) -> bool {
     match outcome {
         Ok((kitty, iterm, sixel)) => {
             let supported = kitty != viuer::KittySupport::None || iterm || sixel;
@@ -78,4 +85,26 @@ fn prog_name() -> String {
     std::env::args().next()
         .and_then(|p| std::path::Path::new(&p).file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "qtools".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn program_name_is_available() {
+        assert!(!prog_name().is_empty());
+    }
+
+    #[test]
+    fn probe_result_accepts_each_protocol_and_rejects_none_or_timeout() {
+        use viuer::KittySupport;
+
+        assert!(interpret_probe(Ok((KittySupport::Local, false, false)), false));
+        assert!(interpret_probe(Ok((KittySupport::Remote, false, false)), false));
+        assert!(interpret_probe(Ok((KittySupport::None, true, false)), false));
+        assert!(interpret_probe(Ok((KittySupport::None, false, true)), false));
+        assert!(!interpret_probe(Ok((KittySupport::None, false, false)), false));
+        assert!(!interpret_probe(Err(std::sync::mpsc::RecvTimeoutError::Timeout), false));
+    }
 }

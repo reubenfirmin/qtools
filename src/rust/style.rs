@@ -160,6 +160,9 @@ mod tests {
         assert_eq!(dim("x", false), "x");
         assert_eq!(bold("x", false), "x");
         assert_eq!(color_swatch(OTHER_COLOR, false), "██");
+        assert_eq!(size_text(1_000_000_000, false), "1G");
+        assert!(size_text(1_000_000_000, true).contains("\u{1b}["));
+        assert!(color_swatch((1, 2, 3), true).contains("38;2;1;2;3"));
     }
 
     #[test]
@@ -173,5 +176,6 @@ mod tests {
         assert_eq!(json_escape(r#"a"b\c"#), r#"a\"b\\c"#);
         assert_eq!(json_escape("tab\tnl\n"), "tab\\tnl\\n");
         assert_eq!(json_escape("\u{1}"), "\\u0001");
+        assert_eq!(json_escape("\r\u{7}"), "\\r\\u0007");
     }
 }

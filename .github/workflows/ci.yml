@@ -15,7 +15,14 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy,llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-llvm-cov
       - run: cargo test --locked --all-targets
+      - run: cargo llvm-cov --locked --all-targets --fail-under-lines 95
       - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo audit
+      - run: shellcheck packaging/appimage/AppRun packaging/appimage/build.sh
+      - run: sh -n packaging/appimage/AppRun packaging/appimage/build.sh

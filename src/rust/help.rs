@@ -70,6 +70,7 @@ mod tests {
 
     #[test]
     fn routes_topics_aliases_and_context_flags() {
+        assert!(matches!(route(&args(&["pq", "help"]), "HOME", TOPICS, CONTEXTS), Request::Show("HOME")));
         assert!(matches!(route(&args(&["pq", "help", "network"]), "HOME", TOPICS, CONTEXTS), Request::Show("NET")));
         assert!(matches!(route(&args(&["pq", "--port", "80", "--help"]), "HOME", TOPICS, CONTEXTS), Request::Show("NET")));
         assert!(matches!(route(&args(&["pq", "--help"]), "HOME", TOPICS, CONTEXTS), Request::Show("HOME")));

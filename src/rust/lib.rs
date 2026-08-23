@@ -8,3 +8,5 @@ pub mod help;
 pub mod output;
 pub mod render;
 pub mod update;
+pub mod pq;
+pub mod dq;

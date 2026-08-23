@@ -86,3 +86,22 @@ pub fn set_noecho(mode: &TtyMode) {
         libc::tcsetattr(mode.file.as_raw_fd(), libc::TCSANOW, &raw);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn noninteractive_environment_has_no_stdout_geometry() {
+        assert_eq!(stdout_width(), None);
+    }
+
+    #[test]
+    fn tty_snapshot_is_optional_and_restorable_when_present() {
+        if let Some(mode) = save_tty_mode() {
+            set_noecho(&mode);
+            drain_input(&mode);
+            restore_tty_mode(&mode);
+        }
+    }
+}

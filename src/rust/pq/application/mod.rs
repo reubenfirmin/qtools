@@ -13,7 +13,7 @@ pub(super) fn execute(plan: &QueryPlan) -> Result<(), String> {
         (Action::Kill(options), _) => return run_kill(options.pattern.as_deref().unwrap(), plan, options),
         (Action::Report, View::Network) => return run_net_report(plan),
         (Action::Report, View::Io) => return run_io_report(plan),
-        (Action::Report, View::Deleted | View::Fds | View::Holders | View::Blocked | View::Pss | View::Oom | View::Limits | View::Unix) => {
+        (Action::Report, View::Deleted | View::Fds | View::Holders | View::Blocked | View::Pss | View::Maps | View::Access | View::Oom | View::Limits | View::Unix) => {
             return run_diagnostic_report(plan);
         }
         (Action::Report, View::Processes) => {}

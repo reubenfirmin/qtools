@@ -6,7 +6,7 @@ use crate::render::{self, RenderContext};
 use crate::style;
 
 use super::super::{
-    blocked_report, fd_report, io_report, kill, limits_report, net, net_report, netdiag,
+    blocked_report, fd_report, io_report, kill, limits_report, maps_report, net, net_report, netdiag,
     oom_report, platform, proc, pss_report, ranked_report, selection, unix_report,
 };
 use super::super::pq_query::{KillOptions, QueryPlan, View};
@@ -153,6 +153,12 @@ pub(super) fn run_diagnostic_report(plan: &QueryPlan) -> Result<(), String> {
         }
     }
 
+    let access_sample = if plan.view == View::Access {
+        let sampled = maps_report::begin_access_sample(&allowed);
+        if !sampled.is_empty() { std::thread::sleep(Duration::from_millis(plan.interval_ms)); }
+        Some(sampled)
+    } else { None };
+
     let report = match plan.view {
         View::Deleted => fd_report::deleted_report(files.as_ref().unwrap(), &allowed),
         View::Fds => fd_report::fds_report(files.as_ref().unwrap(), &allowed),
@@ -160,6 +166,8 @@ pub(super) fn run_diagnostic_report(plan: &QueryPlan) -> Result<(), String> {
             normalized_file.as_deref(), normalized_mount.as_deref()),
         View::Blocked => blocked_report::build(&procs, &allowed),
         View::Pss => pss_report::build(&procs, &allowed),
+        View::Maps => maps_report::maps(&procs, &allowed),
+        View::Access => maps_report::access(&procs, access_sample.as_ref().unwrap()),
         View::Oom => oom_report::build(&procs, &allowed),
         View::Limits => limits_report::build(&procs, &allowed,
             plan.output.verbose || plan.process.pid.is_some() || plan.process.pattern.is_some()),

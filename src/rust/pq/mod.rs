@@ -9,6 +9,7 @@ mod identity;
 mod io_report;
 mod kill;
 mod limits_report;
+mod maps_report;
 mod net;
 mod net_report;
 mod oom_report;
@@ -42,6 +43,10 @@ pub fn main() {
 
     cli::help::show_and_exit();
     let args = Args::parse();
+    if let Some(shell) = args.generate_completion {
+        cli::generate_completion(shell);
+        return;
+    }
     let plan = QueryPlan::from_args(&args).unwrap_or_else(|message| exit_with_error(message));
     if let Err(message) = application::execute(&plan) {
         exit_with_error(message);

@@ -94,6 +94,10 @@ pub fn main() {
     let colors = !invocation.iter().any(|arg| arg == "--no-color");
     show_help_and_exit();
     let args = Args::parse();
+    if let Some(shell) = args.generate_completion {
+        cli::generate_completion(shell);
+        return;
+    }
     let plan = DiskQuery::from_args(&args).unwrap_or_else(|message| {
         eprintln!("dq: {message}"); std::process::exit(2)
     });

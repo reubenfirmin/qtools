@@ -41,7 +41,7 @@ impl SocketSelection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum View { Processes, Network, Io, Deleted, Fds, Holders, Blocked, Pss, Oom, Limits, Unix }
+pub enum View { Processes, Network, Io, Deleted, Fds, Holders, Blocked, Pss, Maps, Access, Oom, Limits, Unix }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoMetric { Combined, Read, Write }
@@ -131,6 +131,8 @@ mod tests {
         assert_eq!(plan(&["pq", "--fds"]).view, View::Fds);
         assert_eq!(plan(&["pq", "--blocked"]).view, View::Blocked);
         assert_eq!(plan(&["pq", "--pss"]).view, View::Pss);
+        assert_eq!(plan(&["pq", "--maps"]).view, View::Maps);
+        assert_eq!(plan(&["pq", "--access"]).view, View::Access);
         assert_eq!(plan(&["pq", "--oom"]).view, View::Oom);
         assert_eq!(plan(&["pq", "--limits"]).view, View::Limits);
         assert_eq!(plan(&["pq", "--unix"]).view, View::Unix);

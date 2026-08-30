@@ -1,4 +1,5 @@
-use clap::{Parser, ValueEnum};
+use clap::{CommandFactory, Parser, ValueEnum, ValueHint};
+use clap_complete::{generate, Shell};
 
 pub(crate) mod help;
 
@@ -10,6 +11,8 @@ use crate::output::{OutputFormat, OutputOptions};
 #[derive(Parser, Debug)]
 #[command(name = "pq", about = "pq: query and cluster the processes eating your CPU/memory or talking on the network.", after_help = EXAMPLES)]
 pub(crate) struct Args {
+    /// Print a completion script for the selected shell
+    #[arg(long, value_enum, value_name = "SHELL", exclusive = true)] pub(super) generate_completion: Option<CompletionShell>,
     /// Clusters to show (default 15; --listen defaults to all, so no listener is ever cut off)
     #[arg(short = 'n', long, help_heading = "Reporting")] pub(super) top: Option<usize>,
     /// Expand clusters to their member processes (per-connection rows in --net mode)
@@ -49,19 +52,23 @@ pub(crate) struct Args {
     /// Report open file descriptor counts and classifications
     #[arg(long, help_heading = "Queries")] pub(super) fds: bool,
     /// Select processes holding paths beneath this mount/directory
-    #[arg(long, value_name = "PATH", help_heading = "Selection and refinement")] pub(super) mount: Option<String>,
+    #[arg(long, value_name = "PATH", value_hint = ValueHint::DirPath, help_heading = "Selection and refinement")] pub(super) mount: Option<String>,
     /// Select processes holding this exact path
-    #[arg(long, value_name = "PATH", conflicts_with = "mount", help_heading = "Selection and refinement")] pub(super) file: Option<String>,
+    #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath, conflicts_with = "mount", help_heading = "Selection and refinement")] pub(super) file: Option<String>,
     /// Report processes in uninterruptible D state
     #[arg(long, help_heading = "Queries")] pub(super) blocked: bool,
     /// Report proportional memory from smaps_rollup
     #[arg(long, help_heading = "Queries")] pub(super) pss: bool,
+    /// Report mapped address-space breadth from /proc/PID/maps
+    #[arg(long, help_heading = "Queries")] pub(super) maps: bool,
+    /// Sample recently referenced memory regions (resets selected processes' page-reference bits)
+    #[arg(long, help_heading = "Queries")] pub(super) access: bool,
     /// Rank processes by the kernel's current out-of-memory kill preference
     #[arg(long, help_heading = "Queries")] pub(super) oom: bool,
     /// Report measurable finite process resource limits
     #[arg(long, help_heading = "Queries")] pub(super) limits: bool,
     /// Report Unix-domain sockets, optionally matching a socket path
-    #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "PATH", help_heading = "Queries")] pub(super) unix: Option<String>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "PATH", value_hint = ValueHint::FilePath, help_heading = "Queries")] pub(super) unix: Option<String>,
     /// Report TCP/UDP connections instead of cpu/mem clusters (sorted by traffic, then
     /// connection count; metric flags do not change the sort). World-exposed listeners are
     /// highlighted
@@ -100,6 +107,25 @@ pub(crate) struct Args {
     #[arg(short = '9', long = "sigkill", help_heading = "Actions")] pub(super) sigkill: bool,
     /// Filter the report to matching clusters
     pub(super) pattern: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum CompletionShell { Bash, Elvish, Fish, PowerShell, Zsh }
+
+impl From<CompletionShell> for Shell {
+    fn from(shell: CompletionShell) -> Self {
+        match shell {
+            CompletionShell::Bash => Shell::Bash,
+            CompletionShell::Elvish => Shell::Elvish,
+            CompletionShell::Fish => Shell::Fish,
+            CompletionShell::PowerShell => Shell::PowerShell,
+            CompletionShell::Zsh => Shell::Zsh,
+        }
+    }
+}
+
+pub(crate) fn generate_completion(shell: CompletionShell) {
+    generate(Shell::from(shell), &mut Args::command(), "pq", &mut std::io::stdout());
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -173,15 +199,17 @@ impl QueryPlan {
         let metric = if args.swap { Metric::Swap } else if args.memory { Metric::Memory } else { Metric::Cpu };
         let io_metric = if args.read { IoMetric::Read } else if args.write { IoMetric::Write } else { IoMetric::Combined };
         let explicit = [args.io || args.read || args.write, args.deleted, args.fds, args.blocked, args.pss,
-            args.oom, args.limits, args.unix.is_some()];
+            args.maps, args.access, args.oom, args.limits, args.unix.is_some()];
         if explicit.into_iter().filter(|active| *active).count() > 1 {
-            return Err("choose only one report view (--io/--read/--write, --deleted, --fds, --blocked, --pss, --oom, --limits, or --unix)".into());
+            return Err("choose only one report view (--io/--read/--write, --deleted, --fds, --blocked, --pss, --maps, --access, --oom, --limits, or --unix)".into());
         }
         let view = if args.io || args.read || args.write { View::Io }
             else if args.deleted { View::Deleted }
             else if args.fds { View::Fds }
             else if args.blocked { View::Blocked }
             else if args.pss { View::Pss }
+            else if args.maps { View::Maps }
+            else if args.access { View::Access }
             else if args.oom { View::Oom }
             else if args.limits { View::Limits }
             else if args.unix.is_some() { View::Unix }

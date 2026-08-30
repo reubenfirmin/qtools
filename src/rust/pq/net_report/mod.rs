@@ -106,8 +106,8 @@ pub fn write_text<W: Write>(out: &mut W, r: &net::NetReport, mem_used: u64, mem_
 
 /// The overview grid beneath the header/rule; shared with write_graphics, which passes
 /// `swatches: true` after drawing the donut so every row carries the color swatch of its slice
-/// (palette color for the top clusters in ring order, gray for anything folded into the "other"
-/// arc: rank-13+ clusters and unattributed sockets).
+/// (stable identity color for the top clusters, gray for anything folded into the "other" arc:
+/// rank-13+ clusters and unattributed sockets).
 fn write_body<W: Write>(out: &mut W, r: &net::NetReport, opts: &NetOpts, swatches: bool) -> io::Result<()> {
     let colors = opts.colors;
     // A swatch occupies 2 cells plus the 2-space gutter that follows it.
@@ -119,13 +119,13 @@ fn write_body<W: Write>(out: &mut W, r: &net::NetReport, opts: &NetOpts, swatche
     writeln!(out, "{}", dim(&heading, colors))?;
 
     let top: Vec<&net::NetCluster> = r.clusters.iter().take(opts.top).collect();
+    let row_colors = chart::identity_colors(top.iter().map(|cluster| cluster.identity.as_str()));
 
     for (rank, c) in top.iter().enumerate() {
         if swatches {
-            // Same color the donut gave this cluster: palette by rank, gray once it fell into
-            // the "other" arc (rank beyond the palette).
-            let color = if rank < style::PALETTE.len() { style::PALETTE[rank] } else { style::OTHER_COLOR };
-            write!(out, "{}  ", style::color_swatch(color, colors))?;
+            // Same stable identity color the donut gave this cluster; ranks beyond the palette
+            // are folded into the gray "other" arc.
+            write!(out, "{}  ", style::color_swatch(row_colors[rank], colors))?;
         }
         let mut name = c.identity.clone();
         if c.proc_count > 1 {
@@ -292,17 +292,14 @@ fn listening_ports<'a>(socks: impl Iterator<Item = &'a net::Sock>) -> (Vec<u16>,
 /// unattributed sockets, the sudo hint, and an actionable kill hint.
 /// sums to `total`. No "unused" arc: unlike cpu/mem there is no capacity concept.
 fn conn_segments(r: &net::NetReport, top: usize, count: impl Fn(&net::NetCluster) -> u64, total: u64) -> Vec<chart::Segment> {
-    let top_clusters: Vec<&net::NetCluster> = r.clusters.iter().take(top.min(style::PALETTE.len())).collect();
-    let mut segs: Vec<chart::Segment> = top_clusters.iter().enumerate()
-        .map(|(i, c)| chart::Segment { label: c.identity.clone(), value: count(c), color: style::PALETTE[i] })
-        .collect();
-    let sum: u64 = segs.iter().map(|s| s.value).sum();
-    segs.push(chart::Segment {
-        label: "other".to_string(),
-        value: total.saturating_sub(sum),
-        color: style::OTHER_COLOR
-    });
-    segs
+    let items: Vec<(String, u64)> = r.clusters.iter().map(|cluster| (cluster.identity.clone(), count(cluster))).collect();
+    let mut segments = chart::identity_segments(&items, total, top);
+    // Network legends always carry an "other" row because it also represents unattributed
+    // sockets, including the useful all-attributed/zero case.
+    if segments.last().is_none_or(|segment| segment.label != "other") {
+        segments.push(chart::Segment { label: "other".to_string(), value: 0, color: style::OTHER_COLOR });
+    }
+    segments
 }
 
 /// Draw the connections donut, then the grid beneath it as the legend (each row carries its

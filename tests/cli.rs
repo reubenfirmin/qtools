@@ -48,6 +48,21 @@ fn successful_json(binary: &str, label: &str, arguments: &[&str]) -> serde_json:
 }
 
 #[test]
+fn commands_generate_shell_completions() {
+    let pq = run("pq", "pq-completion", &["--generate-completion", "bash"]);
+    assert!(pq.status.success(), "{}", String::from_utf8_lossy(&pq.stderr));
+    let pq_script = String::from_utf8_lossy(&pq.stdout);
+    assert!(pq_script.contains("--state"));
+    assert!(pq_script.contains("listen established bound other"));
+
+    let dq = run("dq", "dq-completion", &["--generate-completion", "fish"]);
+    assert!(dq.status.success(), "{}", String::from_utf8_lossy(&dq.stderr));
+    let dq_script = String::from_utf8_lossy(&dq.stdout);
+    assert!(dq_script.contains("complete -c dq"));
+    assert!(dq_script.contains("older-than"));
+}
+
+#[test]
 fn pq_process_network_and_io_views_run_end_to_end() {
     let process = successful_json("pq", "process", &["--json", "--interval", "0", "--top", "2"]);
     assert!(process.get("clusters").is_some());
@@ -61,10 +76,17 @@ fn pq_process_network_and_io_views_run_end_to_end() {
 
 #[test]
 fn pq_diagnostic_views_run_end_to_end() {
-    for view in ["--blocked", "--oom", "--limits", "--pss", "--unix"] {
+    for view in ["--blocked", "--oom", "--limits", "--pss", "--maps", "--unix"] {
         let value = successful_json("pq", &view[2..], &[view, "--json", "--interval", "0"]);
         assert!(value.is_object(), "{view} did not return an object");
     }
+
+    let mut sleeper = Command::new("sleep").arg("30").spawn().unwrap();
+    let pid = sleeper.id().to_string();
+    let access = successful_json("pq", "access", &["--access", "--pid", &pid, "--json", "--interval", "1"]);
+    let _ = sleeper.kill();
+    let _ = sleeper.wait();
+    assert_eq!(access["mode"], "access");
 }
 
 #[test]
@@ -81,6 +103,7 @@ fn pq_human_renderers_run_end_to_end() {
         ("holders-text", vec!["--mount", "/tmp", "--no-color", "--interval", "0", "--top", "2"]),
         ("blocked-text", vec!["--blocked", "--no-color", "--interval", "0"]),
         ("limits-text", vec!["--limits", "--verbose", "--no-color", "--interval", "0", "--top", "2"]),
+        ("maps-text", vec!["--maps", "--verbose", "--no-color", "--interval", "0", "--top", "2"]),
     ] {
         let output = run("pq", label, &arguments);
         assert!(output.status.success(), "{label}: {}", String::from_utf8_lossy(&output.stderr));
@@ -94,6 +117,10 @@ fn pq_help_and_validation_errors_have_stable_streams_and_statuses() {
     assert!(help.status.success());
     assert!(String::from_utf8_lossy(&help.stdout).contains("pq reporting"));
     assert!(help.stderr.is_empty());
+
+    let memory_help = run("pq", "memory-help", &["help", "memory"]);
+    assert!(memory_help.status.success());
+    assert!(String::from_utf8_lossy(&memory_help.stdout).contains("--access"));
 
     let invalid = run("pq", "invalid", &["--kill"]);
     assert!(!invalid.status.success());

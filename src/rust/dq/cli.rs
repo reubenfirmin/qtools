@@ -1,5 +1,6 @@
 use std::time::Duration;
-use clap::Parser;
+use clap::{CommandFactory, Parser, ValueEnum, ValueHint};
+use clap_complete::{generate, Shell};
 
 use super::{parse_bytes, parse_duration};
 use super::dq_query::{DiskQuery, DiskSelection, DiskView, PresentationOptions, SizeAccounting, TraversalOptions};
@@ -9,13 +10,15 @@ use std::fs;
 #[derive(Parser, Debug)]
 #[command(name = "dq", about = "dq: quantify what's eating your disk")]
 pub(crate) struct Args {
+    /// Print a completion script for the selected shell
+    #[arg(long, value_enum, value_name = "SHELL", exclusive = true)] pub(super) generate_completion: Option<CompletionShell>,
     #[arg(long)] pub(super) files: bool,
     #[arg(long)] pub(super) owners: bool,
     #[arg(long)] pub(super) age: bool,
     #[arg(long, conflicts_with = "apparent")] pub(super) allocated: bool,
     #[arg(long, conflicts_with = "allocated")] pub(super) apparent: bool,
     #[arg(long, value_name = "PATTERN", action = clap::ArgAction::Append)] pub(super) exclude: Vec<String>,
-    #[arg(long, value_name = "FILE")] pub(super) exclude_from: Option<String>,
+    #[arg(long, value_name = "FILE", value_hint = ValueHint::FilePath)] pub(super) exclude_from: Option<String>,
     #[arg(long, value_name = "AGE", value_parser = parse_duration)] pub(super) older_than: Option<Duration>,
     #[arg(long, value_name = "SIZE", value_parser = parse_bytes)] pub(super) min_size: Option<u64>,
     #[arg(long)] pub(super) top: Option<usize>,
@@ -32,8 +35,28 @@ pub(crate) struct Args {
     #[arg(long, conflicts_with = "cross_filesystems")] pub(super) one_file_system: bool,
     #[arg(short, long, default_value_t = 50)] pub(super) threads: i32,
     #[arg(long = "noprogress")] pub(super) noprogress: bool,
-    #[arg(default_value = ".")] pub(super) dir: String,
+    #[arg(default_value = ".", value_hint = ValueHint::DirPath)] pub(super) dir: String,
 }
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum CompletionShell { Bash, Elvish, Fish, PowerShell, Zsh }
+
+impl From<CompletionShell> for Shell {
+    fn from(shell: CompletionShell) -> Self {
+        match shell {
+            CompletionShell::Bash => Shell::Bash,
+            CompletionShell::Elvish => Shell::Elvish,
+            CompletionShell::Fish => Shell::Fish,
+            CompletionShell::PowerShell => Shell::PowerShell,
+            CompletionShell::Zsh => Shell::Zsh,
+        }
+    }
+}
+
+pub(crate) fn generate_completion(shell: CompletionShell) {
+    generate(Shell::from(shell), &mut Args::command(), "dq", &mut std::io::stdout());
+}
+
 impl DiskQuery {
     pub fn from_args(args: &Args) -> Result<Self, String> {
         if [args.files, args.owners, args.age].into_iter().filter(|active| *active).count() > 1 {

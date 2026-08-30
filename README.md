@@ -25,6 +25,22 @@ such as `pq --net --help`, `pq --kill --help`, and `dq --json --help` open the m
 
 `sudo ./install.sh` installs system-wide (to `/usr/local/bin`) instead of just for your user.
 
+### Shell completion
+
+Both commands generate completion scripts for Bash, Zsh, Fish, Elvish, and PowerShell from the same
+CLI definition. For the current shell session:
+
+```sh
+source <(pq --generate-completion bash) # Bash
+source <(dq --generate-completion bash)
+pq --generate-completion zsh > ~/.zfunc/_pq
+dq --generate-completion fish > ~/.config/fish/completions/dq.fish
+```
+
+Pass one of `bash`, `zsh`, `fish`, `elvish`, or `power-shell`. Put the generated file in your shell's
+normal completion directory to enable it permanently. AppImage installations can generate both
+command definitions at once with `qtools --generate-completion SHELL`.
+
 ### Cross-distribution AppImage
 
 Release builds are available from [qtools.sh](https://qtools.sh/) as one AppImage containing both
@@ -84,10 +100,11 @@ Examples:
 Reads `/proc` (Linux only) and clusters processes by resolved identity, not just executable name: a JVM
 running a Gradle daemon groups as `gradle`, not a pile of `java`; Chrome's renderer swarm collapses into
 one `chrome (N procs)` (separate profiles/instances are told apart). `-v` expands a cluster to its
-member processes.
+member processes. Process identities have deterministic preferred colors across report types;
+palette collisions move the lower-ranked identity to an available color for that invocation.
 
     pq --cpu / --memory / --swap   # sort/chart metric (default: cpu)
-    pq --io / --read / --write      # process I/O rates (combined/read/write sort)
+    pq --io / --read / --write      # process I/O rates; read/write rings, selected sort
     pq -n N                          # clusters to show (default 15)
     pq -v                             # expand clusters (processes; connections in --net mode)
     pq --interval MS                   # CPU sample interval (default 400ms)
@@ -155,7 +172,8 @@ text renderer on an interactive terminal.
 
 Samples `read_bytes` and `write_bytes` from `/proc/<pid>/io` over `--interval`, then aggregates the
 rates using pq's normal resolved process identities. `--io` sorts by combined throughput; `--read`
-and `--write` select the same report sorted by that direction. Process and socket selectors compose:
+and `--write` select the same report sorted by that direction. Graphical output always draws reads
+in the outer ring and writes in the inner ring. Process and socket selectors compose:
 
     pq --io
     pq --write postgres
@@ -184,9 +202,11 @@ Every standalone view uses the normal graphics/text/JSON rendering pipeline.
 
     pq --deleted                 # deleted files still consuming disk space
     pq --deleted -v              # show each held descriptor/path
-    pq --fds                     # descriptor counts and classifications
+    pq --fds                     # descriptor counts; one ring per descriptor class
     pq --blocked                 # tasks in uninterruptible D state + wchan
     pq --pss chrome              # proportional/private/shared/anonymous memory
+    pq --maps                    # virtual regions/bytes and mapped-file breadth
+    pq --access --pid 1234       # sample recently referenced mappings for one process
     pq --oom                     # relative kernel OOM-kill preference
     pq --limits                  # finite resource limits nearing exhaustion
     pq --file /var/log/app.log   # who holds, maps, executes, or uses this path
@@ -197,12 +217,27 @@ Every standalone view uses the normal graphics/text/JSON rendering pipeline.
 `--deleted` measures the followed open file and deduplicates repeated references to the same
 device/inode within an identity. `--file` and `--mount` examine descriptors, cwd, root, executable,
 and file-backed mappings. `--pss` reads `smaps_rollup` only when explicitly requested because it is
-more expensive and permission-sensitive.
+more expensive and permission-sensitive; its PSS/private/shared/anonymous/swap dimensions use
+aligned columns and independently normalized rings.
+
+In graphical output, `--fds` draws one concentric ring per non-empty descriptor class (files,
+sockets, pipes, anonymous descriptors, devices, and other), with process identity colors kept
+consistent across rings. Text output puts every class in its own aligned column; JSON retains the
+per-identity classification counts. Other ranked diagnostic views use the same structured table
+layout instead of appending several measurements as prose.
 
 `--oom` uses the kernel's current `oom_score` and `oom_score_adj`; it reports relative victim
 preference rather than predicting a kill. `--limits` pairs finite soft limits with live usage where
 Linux exposes a meaningful measurement. Machine-wide output shows utilization of 75% or higher;
 a process pattern, `--pid`, or `-v` shows all measurable finite limits.
+
+`--maps` is a read-only snapshot of `/proc/PID/maps`; it sums reserved virtual ranges across every
+PID in an identity, not resident RAM. Large sparse reservations can therefore reach terabytes.
+File-backed and anonymous classify mappings, while shared and executable are overlapping attributes.
+`--access` is an explicit interval sample: it clears referenced-page bits for the
+selected PIDs, waits `--interval`, and reads per-mapping `Referenced` values from `/proc/PID/smaps`.
+Its table and rings show active regions, referenced bytes, total regions, virtual span, and coverage.
+It is permission-sensitive and intentionally opt-in; keep the selection narrow when running as root.
 
 ### pq Unix-domain sockets
 

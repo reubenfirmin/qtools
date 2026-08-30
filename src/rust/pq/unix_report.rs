@@ -6,7 +6,7 @@ use std::fs;
 use crate::pq::cluster;
 use crate::pq::net;
 use crate::pq::proc;
-use crate::pq::ranked_report::{Report, Row, ValueKind};
+use crate::pq::ranked_report::{Report, Row, Table, ValueKind};
 
 #[derive(Debug, Clone)]
 struct UnixSocket { inode: u64, kind: &'static str, state: &'static str, path: String }
@@ -34,8 +34,9 @@ pub fn build(procs: &[proc::Proc], allowed: &HashSet<i32>, path_filter: Option<&
     let mut rows: Vec<Row> = groups.into_iter().map(|(identity, details)| Row { identity,
         value: details.len() as u64, summary: format!("{} Unix socket(s)", details.len()), details }).collect();
     rows.sort_by_key(|row| std::cmp::Reverse(row.value));
+    let table = Table { headers: vec!["sockets"], rows: rows.iter().map(|row| vec![row.value.to_string()]).collect() };
     Report { mode: "unix", title: "Unix-domain sockets", value_label: "sockets", value_kind: ValueKind::Count,
-        rows, empty_message: "no matching Unix-domain sockets" }
+        rows, rings: Vec::new(), table: Some(table), empty_message: "no matching Unix-domain sockets" }
 }
 
 fn parse(raw: &str) -> Vec<UnixSocket> {

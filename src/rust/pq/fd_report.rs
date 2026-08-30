@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::pq::cluster;
 use crate::pq::proc;
-use crate::pq::ranked_report::{Report, Row, ValueKind};
+use crate::pq::ranked_report::{Report, Ring, Row, Table, ValueKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum FdKind { File, Socket, Pipe, Device, Anon, Other }
@@ -109,21 +109,34 @@ fn path_matches(path: &str, file: Option<&str>, mount: Option<&str>) -> bool {
 pub fn fds_report(files: &[ProcessFiles], allowed: &HashSet<i32>) -> Report {
     let mut groups: HashMap<&str, Vec<&ProcessFiles>> = HashMap::new();
     for process in files.iter().filter(|p| allowed.contains(&p.pid)) { groups.entry(&process.identity).or_default().push(process); }
-    let mut rows: Vec<Row> = groups.into_iter().map(|(identity, processes)| {
+    let mut counted: Vec<(Row, [u64; 6])> = groups.into_iter().map(|(identity, processes)| {
         let count: usize = processes.iter().map(|p| p.entries.len()).sum();
-        let kinds = |kind| processes.iter().flat_map(|p| &p.entries).filter(|e| e.kind == kind).count();
-        Row { identity: identity.to_string(), value: count as u64,
-            summary: format!("files {}  sockets {}  pipes {}  anon {}", kinds(FdKind::File), kinds(FdKind::Socket), kinds(FdKind::Pipe), kinds(FdKind::Anon)),
-            details: processes.iter().flat_map(|p| p.entries.iter().map(move |e| format!("pid {}  fd {}  {}", p.pid, e.fd, e.target))).collect() }
+        let kinds = |kind| processes.iter().flat_map(|p| &p.entries).filter(|e| e.kind == kind).count() as u64;
+        let counts = [kinds(FdKind::File), kinds(FdKind::Socket), kinds(FdKind::Pipe),
+            kinds(FdKind::Anon), kinds(FdKind::Device), kinds(FdKind::Other)];
+        (Row { identity: identity.to_string(), value: count as u64,
+            summary: format!("files {}  sockets {}  pipes {}  anon {}", counts[0], counts[1], counts[2], counts[3]),
+            details: processes.iter().flat_map(|p| p.entries.iter().map(move |e| format!("pid {}  fd {}  {}", p.pid, e.fd, e.target))).collect() }, counts)
     }).collect();
-    rows.sort_by_key(|row| std::cmp::Reverse(row.value));
-    Report { mode: "fds", title: "file descriptors", value_label: "fds", value_kind: ValueKind::Count, rows, empty_message: "no matching file descriptors" }
+    counted.sort_by_key(|(row, _)| std::cmp::Reverse(row.value));
+    let (rows, counts): (Vec<_>, Vec<_>) = counted.into_iter().unzip();
+    let ring = |label, index| Ring { label, values: counts.iter().map(|values| values[index]).collect() };
+    let rings = vec![ring("files", 0), ring("sockets", 1), ring("pipes", 2), ring("anon", 3),
+        ring("devices", 4), ring("other", 5)];
+    let table = Table {
+        headers: vec!["fds", "files", "sockets", "pipes", "anon", "devices", "other"],
+        rows: rows.iter().zip(&counts).map(|(row, values)| vec![row.value.to_string(), values[0].to_string(),
+            values[1].to_string(), values[2].to_string(), values[3].to_string(), values[4].to_string(),
+            values[5].to_string()]).collect(),
+    };
+    Report { mode: "fds", title: "file descriptors", value_label: "fds", value_kind: ValueKind::Count,
+        rows, rings, table: Some(table), empty_message: "no matching file descriptors" }
 }
 
 pub fn deleted_report(files: &[ProcessFiles], allowed: &HashSet<i32>) -> Report {
     let mut grouped: HashMap<&str, Vec<&ProcessFiles>> = HashMap::new();
     for process in files.iter().filter(|p| allowed.contains(&p.pid)) { grouped.entry(&process.identity).or_default().push(process); }
-    let mut rows = Vec::new();
+    let mut counted = Vec::new();
     for (identity, processes) in grouped {
         let mut seen = HashSet::new();
         let mut bytes = 0;
@@ -135,12 +148,21 @@ pub fn deleted_report(files: &[ProcessFiles], allowed: &HashSet<i32>) -> Report 
             }
         }
         if !details.is_empty() {
-            rows.push(Row { identity: identity.to_string(), value: bytes, summary: format!("{} open reference(s)", details.len()), details });
+            let references = details.len() as u64;
+            counted.push((Row { identity: identity.to_string(), value: bytes,
+                summary: format!("{references} open reference(s)"), details }, [bytes, references]));
         }
     }
-    rows.sort_by_key(|row| std::cmp::Reverse(row.value));
+    counted.sort_by_key(|(row, _)| std::cmp::Reverse(row.value));
+    let (rows, values): (Vec<_>, Vec<_>) = counted.into_iter().unzip();
+    let rings = vec![
+        Ring { label: "deleted bytes", values: values.iter().map(|row| row[0]).collect() },
+        Ring { label: "open references", values: values.iter().map(|row| row[1]).collect() },
+    ];
+    let table = Table { headers: vec!["bytes", "refs"], rows: values.iter()
+        .map(|row| vec![human(row[0]), row[1].to_string()]).collect() };
     Report { mode: "deleted", title: "deleted files still open", value_label: "bytes", value_kind: ValueKind::Bytes,
-        rows, empty_message: "no matching deleted open files" }
+        rows, rings, table: Some(table), empty_message: "no matching deleted open files" }
 }
 
 pub fn holders_report(files: &[ProcessFiles], allowed: &HashSet<i32>, file: Option<&str>, mount: Option<&str>) -> Report {
@@ -161,8 +183,9 @@ pub fn holders_report(files: &[ProcessFiles], allowed: &HashSet<i32>, file: Opti
     let mut rows: Vec<Row> = groups.into_iter().map(|(identity, details)| Row { identity: identity.to_string(),
         value: details.len() as u64, summary: format!("{} hold reason(s)", details.len()), details }).collect();
     rows.sort_by_key(|row| std::cmp::Reverse(row.value));
+    let table = Table { headers: vec!["holds"], rows: rows.iter().map(|row| vec![row.value.to_string()]).collect() };
     Report { mode: "holders", title: "processes holding paths", value_label: "holds", value_kind: ValueKind::Count,
-        rows, empty_message: "no process holds the selected path" }
+        rows, rings: Vec::new(), table: Some(table), empty_message: "no process holds the selected path" }
 }
 
 fn human(bytes: u64) -> String { crate::style::human_plain(bytes) }
@@ -251,6 +274,8 @@ mod tests {
         let fds = fds_report(&files, &allowed);
         assert_eq!(fds.rows[0].identity, "alpha");
         assert!(fds.rows[0].summary.contains("files 2"));
+        assert_eq!(fds.rings.iter().map(|ring| (ring.label, ring.values[0])).collect::<Vec<_>>(),
+            vec![("files", 2), ("sockets", 1), ("pipes", 0), ("anon", 0), ("devices", 0), ("other", 0)]);
         let deleted = deleted_report(&files, &allowed);
         assert_eq!(deleted.rows[0].value, 100);
         assert_eq!(deleted.rows[0].details.len(), 2);

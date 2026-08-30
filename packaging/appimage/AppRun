@@ -22,6 +22,9 @@ Usage:
                            Hide update notices for 30 days
   qtools uninstall         Remove the user installation
   qtools version           Show the installed version
+  qtools --generate-completion SHELL
+                           Print pq and dq completions (bash, elvish, fish,
+                           power-shell, or zsh)
 
 Direct use:
   $invoked dq [ARGS...]
@@ -30,6 +33,15 @@ EOF
 }
 
 now() { date +%s; }
+
+generate_completion() {
+    if [ "$#" -ne 1 ]; then
+        echo "qtools: --generate-completion needs a shell" >&2
+        exit 2
+    fi
+    "$appdir/usr/bin/pq" --generate-completion "$1"
+    "$appdir/usr/bin/dq" --generate-completion "$1"
+}
 
 snooze_update_notification() {
     umask 077
@@ -192,6 +204,10 @@ esac
 
 case "${1:-}" in
     --install|install) install_image ;;
+    --generate-completion)
+        shift
+        generate_completion "$@"
+        ;;
     update) update_image ;;
     snooze-update-notification) snooze_update_notification ;;
     uninstall) uninstall_image ;;

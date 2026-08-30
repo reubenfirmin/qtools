@@ -38,22 +38,23 @@ use crate::pq::cluster::Member;
     }
 
     #[test]
-    fn colored_by_assigns_palette_colors_by_rank() {
+    fn colored_by_assigns_stable_identity_colors() {
         let clusters = vec![
             Cluster { identity: "a".into(), cpu: 0.0, rss: 10, swap: 1, members: vec![] },
             Cluster { identity: "b".into(), cpu: 0.0, rss: 20, swap: 2, members: vec![] },
         ];
         let top = top_clusters(&clusters, 15);
+        let colors = chart::identity_colors(["a", "b"]);
         let by_rss = colored_by(&top, |c| c.rss);
         assert_eq!(by_rss, vec![
-            ("a".to_string(), 10, style::PALETTE[0]),
-            ("b".to_string(), 20, style::PALETTE[1]),
+            ("a".to_string(), 10, colors[0]),
+            ("b".to_string(), 20, colors[1]),
         ]);
         // Same identities/colors, different values, when valued by swap instead.
         let by_swap = colored_by(&top, |c| c.swap);
         assert_eq!(by_swap, vec![
-            ("a".to_string(), 1, style::PALETTE[0]),
-            ("b".to_string(), 2, style::PALETTE[1]),
+            ("a".to_string(), 1, colors[0]),
+            ("b".to_string(), 2, colors[1]),
         ]);
     }
 
@@ -200,9 +201,10 @@ use crate::pq::cluster::Member;
             members: vec![Member { pid: 7, cpu: 30.0, rss: 10, swap: 0, cmd: "alpha".into(), comm: "alpha".into() }],
         }];
         let colors = pid_colors(&clusters, 1);
-        assert_eq!(colors.get(&7), Some(&style::PALETTE[0]));
+        let alpha = chart::identity_colors(["alpha"])[0];
+        assert_eq!(colors.get(&7), Some(&alpha));
         let slices = core_ring_slices(&[(7, 25.0), (99, 5.0)], 40.0, &colors);
-        assert!(slices.contains(&(2500, style::PALETTE[0])));
+        assert!(slices.contains(&(2500, alpha)));
         assert!(slices.contains(&(1500, style::OTHER_COLOR)));
         assert!(slices.contains(&(6000, UNUSED_COLOR)));
 

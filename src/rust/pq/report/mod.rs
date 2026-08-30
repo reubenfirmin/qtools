@@ -227,16 +227,16 @@ fn metric_capacity(mem_total: u64, swap_total: u64, metric: Metric) -> u64 {
 }
 
 /// The clusters to color individually: the front of the (already-sorted) list, capped at `top` and
-/// at the palette size, so rank always maps to `style::PALETTE[rank]`. Compute this once and reuse
-/// it (via `colored_by`) across both rings of a two-tier donut, so the same cluster gets the same
-/// color in each.
+/// at the palette size. Compute this once and reuse it (via `colored_by`) across both rings of a
+/// two-tier donut, so the same cluster gets the same stable identity color in each.
 fn top_clusters(clusters: &[Cluster], top: usize) -> Vec<&Cluster> {
     clusters.iter().take(top.min(style::PALETTE.len())).collect()
 }
 
-/// Pair each of `top` with a value (via `value_fn`) and its rank color.
+/// Pair each of `top` with a value (via `value_fn`) and its stable identity color.
 fn colored_by(top: &[&Cluster], value_fn: impl Fn(&Cluster) -> u64) -> Vec<(String, u64, (u8, u8, u8))> {
-    top.iter().enumerate().map(|(i, c)| (c.identity.clone(), value_fn(c), style::PALETTE[i])).collect()
+    let colors = chart::identity_colors(top.iter().map(|cluster| cluster.identity.as_str()));
+    top.iter().zip(colors).map(|(cluster, color)| (cluster.identity.clone(), value_fn(cluster), color)).collect()
 }
 
 /// Build a ring's three-part segments so they always sum to `capacity` (the ring's 100%): the
@@ -257,11 +257,12 @@ fn ring_segments(colored: &[(String, u64, (u8, u8, u8))], used: u64, capacity: u
 
 /// Map every process's pid to the color it should be drawn with in the per-core CPU rings, matching
 /// the legend: pids belonging to one of the top clusters (same rank/limit `top_clusters` uses) get
-/// that cluster's palette color, and every other pid gets `style::OTHER_COLOR`.
+/// that cluster's stable identity color, and every other pid gets `style::OTHER_COLOR`.
 fn pid_colors(clusters: &[Cluster], top_len: usize) -> HashMap<i32, (u8, u8, u8)> {
     let mut map = HashMap::new();
+    let colors = chart::identity_colors(clusters.iter().take(top_len).map(|cluster| cluster.identity.as_str()));
     for (i, c) in clusters.iter().enumerate() {
-        let color = if i < top_len { style::PALETTE[i] } else { style::OTHER_COLOR };
+        let color = colors.get(i).copied().unwrap_or(style::OTHER_COLOR);
         for m in &c.members {
             map.insert(m.pid, color);
         }
@@ -282,8 +283,8 @@ fn core_ring_slices(attrib: &[(i32, f64)], busy_pct: f64, colors: &HashMap<i32, 
         *by_color.entry(color).or_insert(0.0) += cpu;
     }
 
-    // Emit the palette colors in rank order (same as the legend), so a given cluster sits at the
-    // same angle on every ring and a process's use across cores reads as an aligned color band.
+    // Emit stable identity colors in palette order. Keeping that order fixed across cores makes a
+    // process's use read as a consistently-colored band even when it did no work on some cores.
     let mut slices: Vec<donut::Slice> = Vec::new();
     let mut palette_sum = 0.0_f64;
     for &color in style::PALETTE.iter() {

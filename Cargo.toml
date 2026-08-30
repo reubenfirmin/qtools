@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 threadpool = "1.8.1"
 clap = { version = "4.1.13",  features = ["derive"] }
+clap_complete = "4.5"
 viuer = { version = "0.11", default-features = false, features = ["icy_sixel"] }
 image = { version = "0.25", default-features = false }
 libc = "0.2"

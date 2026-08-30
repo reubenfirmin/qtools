@@ -5,7 +5,7 @@ use std::fs;
 
 use crate::pq::cluster;
 use crate::pq::proc;
-use crate::pq::ranked_report::{Report, Row, ValueKind};
+use crate::pq::ranked_report::{Report, Ring, Row, Table, ValueKind};
 
 #[derive(Default)]
 struct Smaps { pss: u64, private: u64, shared: u64, anonymous: u64, swap_pss: u64 }
@@ -22,13 +22,22 @@ pub fn build(procs: &[proc::Proc], allowed: &HashSet<i32>) -> Report {
         entry.1.push(format!("pid {}  pss {}  private {}  shared {}  anon {}  swap pss {}", process.pid,
             human(smaps.pss), human(smaps.private), human(smaps.shared), human(smaps.anonymous), human(smaps.swap_pss)));
     }
-    let mut rows: Vec<Row> = groups.into_iter().map(|(identity, (smaps, details))| Row {
-        identity, value: smaps.pss,
-        summary: format!("private {}  shared {}  anon {}  swap {}", human(smaps.private), human(smaps.shared), human(smaps.anonymous), human(smaps.swap_pss)), details
+    let mut counted: Vec<(Row, [u64; 5])> = groups.into_iter().map(|(identity, (smaps, details))| {
+        let values = [smaps.pss, smaps.private, smaps.shared, smaps.anonymous, smaps.swap_pss];
+        (Row { identity, value: smaps.pss,
+            summary: format!("private {}  shared {}  anon {}  swap {}", human(smaps.private),
+                human(smaps.shared), human(smaps.anonymous), human(smaps.swap_pss)), details }, values)
     }).collect();
-    rows.sort_by_key(|row| std::cmp::Reverse(row.value));
+    counted.sort_by_key(|(row, _)| std::cmp::Reverse(row.value));
+    let (rows, values): (Vec<_>, Vec<_>) = counted.into_iter().unzip();
+    let ring = |label, index| Ring { label, values: values.iter().map(|row| row[index]).collect() };
+    let rings = vec![ring("pss", 0), ring("private", 1), ring("shared", 2), ring("anonymous", 3), ring("swap pss", 4)];
+    let table = Table {
+        headers: vec!["pss", "private", "shared", "anon", "swap"],
+        rows: values.iter().map(|row| row.iter().map(|value| human(*value)).collect()).collect(),
+    };
     Report { mode: "pss", title: "proportional memory", value_label: "pss", value_kind: ValueKind::Bytes,
-        rows, empty_message: "no proportional-memory data readable for matching processes" }
+        rows, rings, table: Some(table), empty_message: "no proportional-memory data readable for matching processes" }
 }
 
 fn read_smaps(pid: i32) -> Option<Smaps> {

@@ -15,5 +15,8 @@ symlinks. It refuses to replace unrelated files or symlinks. `qtools update` dow
 architecture-specific AppImage and checksum from `repo.qtools.sh`, verifies the digest and GitHub
 build-provenance attestation, and only then atomically replaces the installed image.
 
+`qtools --generate-completion SHELL` prints the generated `pq` and `dq` completion definitions for
+Bash, Zsh, Fish, Elvish, or PowerShell (`power-shell`).
+
 GitHub Actions publishes a keyless build-provenance attestation for each AppImage. Verification uses
 `gh attestation verify` and the repository identity, so there is no persistent signing key.

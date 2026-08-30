@@ -5,27 +5,31 @@ use std::fs;
 
 use crate::pq::cluster;
 use crate::pq::proc;
-use crate::pq::ranked_report::{Report, Row, ValueKind};
+use crate::pq::ranked_report::{Report, Row, Table, ValueKind};
 
 pub fn build(procs: &[proc::Proc], allowed: &HashSet<i32>) -> Report {
     let identities = cluster::effective_identities(procs);
-    let mut rows = Vec::new();
+    let mut counted = Vec::new();
     for process in procs.iter().filter(|process| allowed.contains(&process.pid)) {
         let Some(score) = read_number::<u64>(process.pid, "oom_score") else { continue };
         let adjustment = read_number::<i32>(process.pid, "oom_score_adj").unwrap_or(0);
         let identity = identities.get(&process.pid).cloned().unwrap_or_else(|| process.comm.clone());
         let protection = if adjustment == -1000 { "protected" } else if adjustment < 0 { "less preferred" }
             else if adjustment > 0 { "more preferred" } else { "default adjustment" };
-        rows.push(Row {
+        let row = Row {
             identity: format!("{identity} (pid {})", process.pid), value: score,
             summary: format!("mem {}  adjustment {adjustment}  {protection}", crate::style::human_plain(process.rss)),
             details: vec![format!("pid {}  oom_score {}  oom_score_adj {}  {}", process.pid, score,
                 adjustment, crate::style::truncate_middle(&process.cmdline.join(" "), 200))],
-        });
+        };
+        counted.push((row, vec![score.to_string(), crate::style::human_plain(process.rss),
+            adjustment.to_string(), protection.to_string()]));
     }
-    rows.sort_by_key(|row| std::cmp::Reverse(row.value));
+    counted.sort_by_key(|(row, _)| std::cmp::Reverse(row.value));
+    let (rows, table_rows): (Vec<_>, Vec<_>) = counted.into_iter().unzip();
+    let table = Table { headers: vec!["score", "mem", "adj", "preference"], rows: table_rows };
     Report { mode: "oom", title: "relative OOM-kill preference", value_label: "oom score",
-        value_kind: ValueKind::Score, rows, empty_message: "no OOM scores readable for matching processes" }
+        value_kind: ValueKind::Score, rows, rings: Vec::new(), table: Some(table), empty_message: "no OOM scores readable for matching processes" }
 }
 
 fn read_number<T: std::str::FromStr>(pid: i32, name: &str) -> Option<T> {

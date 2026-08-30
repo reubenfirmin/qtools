@@ -132,11 +132,11 @@ fn write_rows<W: Write>(out: &mut W, clusters: &[IoCluster], opts: &IoOpts, swat
         return Ok(());
     }
     let shown: Vec<&IoCluster> = clusters.iter().take(opts.top).collect();
+    let row_colors = chart::identity_colors(shown.iter().map(|cluster| cluster.identity.as_str()));
     let largest = shown.iter().map(|c| metric_value(c, opts.metric)).max().unwrap_or(0);
     for (rank, c) in shown.into_iter().enumerate() {
         if swatches {
-            let color = style::PALETTE.get(rank).copied().unwrap_or(style::OTHER_COLOR);
-            write!(out, "{}  ", color_swatch(color, opts.colors))?;
+            write!(out, "{}  ", color_swatch(row_colors[rank], opts.colors))?;
         }
         let value = metric_value(c, opts.metric);
         let fill = if largest > 0 { chart::bar_fill(value as f64 / largest as f64, chart::BAR_WIDTH) } else { 0 };
@@ -167,19 +167,23 @@ fn write_graphics_with<W: Write>(out: &mut W, clusters: &[IoCluster], opts: &IoO
     if clusters.is_empty() {
         return write_rows(out, clusters, opts, false);
     }
-    let items: Vec<(String, u64)> = clusters.iter().map(|c| (c.identity.clone(), metric_value(c, opts.metric))).collect();
-    let total: u64 = items.iter().map(|(_, value)| *value).sum();
-    if total == 0 {
+    let read_items: Vec<(String, u64)> = clusters.iter().map(|c| (c.identity.clone(), c.read_bps)).collect();
+    let write_items: Vec<(String, u64)> = clusters.iter().map(|c| (c.identity.clone(), c.write_bps)).collect();
+    let read_total: u64 = read_items.iter().map(|(_, value)| *value).sum();
+    let write_total: u64 = write_items.iter().map(|(_, value)| *value).sum();
+    if read_total + write_total == 0 {
         return write_rows(out, clusters, opts, false);
     }
-    let segments = chart::segments(&items, total, opts.top.min(style::PALETTE.len()));
-    let image = donut::build_donut_image(&chart::slices(&segments), chart::DONUT_PX);
+    let reads = chart::identity_segments(&read_items, read_total, opts.top);
+    let writes = chart::identity_segments(&write_items, write_total, opts.top);
+    let image = donut::build_two_ring_image(&chart::slices(&reads), &chart::slices(&writes), chart::DONUT_PX);
     let cols = 40u32;
     let config = viuer::Config { absolute_offset: false, width: Some(cols), height: Some(cols / 2), ..Default::default() };
     out.flush()?;
     if !draw(&image, &config) {
         return write_rows(out, clusters, opts, false);
     }
+    writeln!(out, "{}", dim("outer ring: read    inner ring: write", opts.colors))?;
     write_rows(out, clusters, opts, true)
 }
 
@@ -292,7 +296,9 @@ mod tests {
                 assert_eq!(config.width, Some(40));
                 succeeds
             }).unwrap();
-            assert!(String::from_utf8(output).unwrap().contains("active"));
+            let text = String::from_utf8(output).unwrap();
+            assert!(text.contains("active"));
+            assert_eq!(text.contains("outer ring: read"), succeeds);
         }
     }
 }

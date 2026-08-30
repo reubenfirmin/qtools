@@ -24,7 +24,7 @@ Queries:
                              Process I/O rates
       --net / --unix         Network and Unix sockets
       --deleted / --fds      Open-file usage
-      --blocked / --pss / --oom / --limits
+      --blocked / --pss / --maps / --access / --oom / --limits
                              Process internals
 
 Selection and refinement:
@@ -47,7 +47,7 @@ Focused help:
 
 Detailed help:
   pq help process | io | net | files
-  pq help blocked | pss | oom | limits | unix
+  pq help blocked | memory | oom | limits | unix
 
 Tip: pq --net --help and pq --kill --help open the matching topic.";
 
@@ -82,6 +82,8 @@ Files and process internals:
       --deleted / --fds      Deleted open files or descriptor counts
       --blocked              Uninterruptible kernel waits
       --pss                  Proportional memory
+      --maps                 Mapped address-space breadth
+      --access               Recently referenced memory regions
       --oom                  Kernel OOM victim preference
       --limits               Finite resource-limit utilization
 
@@ -89,7 +91,7 @@ Sockets:
       --net                  TCP/UDP connections and listeners
       --unix [PATH]          Unix-domain sockets
 
-Detailed pages: pq help process | io | files | blocked | pss | oom | limits | net | unix
+Detailed pages: pq help process | io | files | blocked | memory | oom | limits | net | unix
 Selection composes with every query: pq help filters";
 
 const HELP_FILTERS: &str = "\
@@ -151,6 +153,7 @@ Options:
       --interval MS          Sampling interval (default 400)
   -v, --verbose              Expand clusters to processes
 
+Graphical output always uses an outer read ring and inner write ring; the flags only select sorting.
 Values come from /proc/PID/io. They describe process I/O requests; caching means they are not
 necessarily physical device throughput. All ordinary process and socket filters compose.";
 
@@ -166,7 +169,7 @@ Examples:
 
 Options:
       --deleted              Rank identities by deleted open-file bytes
-      --fds                  Rank identities by open descriptor count
+      --fds                  Rank identities by open descriptor count; graph classes as rings
       --mount PATH           Select paths beneath a mount/directory
       --file PATH            Select one exact path
   -v, --verbose              Show descriptors or individual hold reasons
@@ -191,8 +194,30 @@ Examples:
   pq --pid 1234 --pss
   pq --port 5432 --pss
 
-Reads /proc/PID/smaps_rollup and reports PSS plus private/shared/anonymous memory. This is explicit
-because it is more expensive and permission-sensitive than the default RSS report.";
+Reads /proc/PID/smaps_rollup and reports PSS plus private/shared/anonymous memory as aligned columns \
+and independently normalized rings. This is explicit because it is more expensive and \
+permission-sensitive than the default RSS report.";
+
+const HELP_MEMORY_BREADTH: &str = "\
+pq memory breadth and access
+
+Examples:
+  pq --maps                  Rank identities by mapped virtual-memory region count
+  pq --maps chrome           Mapping breadth for matching processes
+  pq --access --pid 1234     Sample recently referenced regions for one process
+  pq --access --interval 2000
+
+Options:
+      --maps                 Read-only /proc/PID/maps snapshot: regions, virtual bytes, mapped files,
+                             anonymous/shared/executable region counts
+      --access               Clear selected PIDs' referenced-page bits, wait --interval, then read
+                             each mapping's Referenced value from /proc/PID/smaps; graph active,
+                             referenced, total-region, virtual, and coverage dimensions as rings
+
+--maps describes reserved virtual address ranges, not resident RAM or what was touched. File/anon
+classify backing; shared and executable are overlapping attributes. --access is explicitly intrusive:
+it resets page-reference accounting for every selected process and may omit PIDs when permission is
+denied. Keep its selection narrow when running as root.";
 
 const HELP_OOM: &str = "\
 pq out-of-memory kill preference
@@ -307,6 +332,7 @@ static HELP_TOPICS: &[Topic] = &[
     Topic { name: "files", aliases: &["fds", "deleted", "mount", "file"], text: HELP_FILES },
     Topic { name: "blocked", aliases: &["wait", "stuck"], text: HELP_BLOCKED },
     Topic { name: "pss", aliases: &["smaps"], text: HELP_PSS },
+    Topic { name: "memory", aliases: &["maps", "access", "working-set"], text: HELP_MEMORY_BREADTH },
     Topic { name: "oom", aliases: &["oom-score"], text: HELP_OOM },
     Topic { name: "limits", aliases: &["ulimit", "rlimit"], text: HELP_LIMITS },
     Topic { name: "unix", aliases: &["unix-sockets"], text: HELP_UNIX },
@@ -322,6 +348,7 @@ static HELP_CONTEXTS: &[(&[&str], &str)] = &[
     (&["--deleted", "--fds", "--mount", "--file"], "files"),
     (&["--blocked"], "blocked"),
     (&["--pss"], "pss"),
+    (&["--maps", "--access"], "memory"),
     (&["--oom"], "oom"),
     (&["--limits"], "limits"),
     (&["--unix"], "unix"),

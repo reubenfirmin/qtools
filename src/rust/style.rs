@@ -19,6 +19,8 @@ const CYAN: i32 = 36;
 /// Human-readable size, e.g. "1.23M", with no ANSI.
 pub fn human_plain(size: u64) -> String {
     match size {
+        s if s >= 1_000_000_000_000_000 => format!("{}P", round2(size, 1_000_000_000_000_000)),
+        s if s >= 1_000_000_000_000 => format!("{}T", round2(size, 1_000_000_000_000)),
         s if s >= 1_000_000_000 => format!("{}G", round2(size, 1_000_000_000)),
         s if s >= 1_000_000 => format!("{}M", round2(size, 1_000_000)),
         s if s >= 1_000 => format!("{}K", round2(size, 1_000)),
@@ -135,6 +137,8 @@ mod tests {
         assert_eq!(human_plain(1_000_000), "1M");
         assert_eq!(human_plain(1_000_000_000), "1G");
         assert_eq!(human_plain(1_234_567_890), "1.23G");
+        assert_eq!(human_plain(33_612_490_000_000), "33.61T");
+        assert_eq!(human_plain(2_500_000_000_000_000), "2.5P");
     }
 
     #[test]

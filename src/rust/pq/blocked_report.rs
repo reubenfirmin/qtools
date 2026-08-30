@@ -5,7 +5,7 @@ use std::fs;
 
 use crate::pq::cluster;
 use crate::pq::proc;
-use crate::pq::ranked_report::{Report, Row, ValueKind};
+use crate::pq::ranked_report::{Report, Row, Table, ValueKind};
 
 pub fn build(procs: &[proc::Proc], allowed: &HashSet<i32>) -> Report {
     let identities = cluster::effective_identities(procs);
@@ -24,8 +24,9 @@ pub fn build(procs: &[proc::Proc], allowed: &HashSet<i32>) -> Report {
         identity, value: details.len() as u64, summary: format!("{} blocked task(s)", details.len()), details
     }).collect();
     rows.sort_by_key(|row| std::cmp::Reverse(row.value));
+    let table = Table { headers: vec!["tasks"], rows: rows.iter().map(|row| vec![row.value.to_string()]).collect() };
     Report { mode: "blocked", title: "blocked processes", value_label: "tasks", value_kind: ValueKind::Count,
-        rows, empty_message: "no matching processes are in uninterruptible D state" }
+        rows, rings: Vec::new(), table: Some(table), empty_message: "no matching processes are in uninterruptible D state" }
 }
 
 #[cfg(test)]

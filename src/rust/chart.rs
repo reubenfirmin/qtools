@@ -6,6 +6,7 @@ use crate::donut;
 
 const PALETTE: [(u8, u8, u8); 12] = crate::style::PALETTE;
 const OTHER: (u8, u8, u8) = crate::style::OTHER_COLOR;
+pub type Color = (u8, u8, u8);
 
 /// Bar width (in characters) for the text-mode proportional bars, shared by dq and pq.
 pub const BAR_WIDTH: usize = 20;
@@ -20,7 +21,49 @@ pub const DONUT_PX: u32 = 600;
 pub struct Segment {
     pub label: String,
     pub value: u64,
-    pub color: (u8, u8, u8)
+    pub color: Color
+}
+
+/// Give ordered process identities stable preferred palette slots, resolving collisions by moving
+/// the lower-ranked identity to the next free slot. This is deliberately stateless: absent
+/// identities reserve nothing, the first palette-sized set always gets distinct colors, and the
+/// same identity keeps its preferred color across report types whenever that slot is uncontested.
+pub fn identity_colors<'a>(identities: impl IntoIterator<Item = &'a str>) -> Vec<Color> {
+    let mut used = [false; PALETTE.len()];
+    identities.into_iter().enumerate().map(|(rank, identity)| {
+        if rank >= PALETTE.len() { return OTHER; }
+        let preferred = stable_identity_hash(identity) as usize % PALETTE.len();
+        let slot = (0..PALETTE.len()).map(|offset| (preferred + offset) % PALETTE.len())
+            .find(|slot| !used[*slot]).expect("a palette slot exists for every visible identity");
+        used[slot] = true;
+        PALETTE[slot]
+    }).collect()
+}
+
+/// FNV-1a with an explicit seed and ASCII case folding. Unlike a hash-map hasher, this is stable
+/// between processes and builds, matching pq's case-insensitive identity selection semantics.
+fn stable_identity_hash(identity: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in identity.bytes() {
+        hash ^= byte.to_ascii_lowercase() as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// Process-identity variant of `segments`: preserve input rank (including zero-valued entries) so
+/// the swatch in a report row and that identity's donut slice always use the same stable color.
+pub fn identity_segments(items: &[(String, u64)], total: u64, max_slices: usize) -> Vec<Segment> {
+    let k = items.len().min(max_slices).min(PALETTE.len());
+    let colors = identity_colors(items[..k].iter().map(|(identity, _)| identity.as_str()));
+    let mut out: Vec<Segment> = items[..k].iter().zip(colors).map(|((label, value), color)| {
+        Segment { label: label.clone(), value: *value, color }
+    }).collect();
+    let kept: u64 = out.iter().map(|segment| segment.value).sum();
+    if total > kept {
+        out.push(Segment { label: "other".to_string(), value: total - kept, color: OTHER });
+    }
+    out
 }
 
 /**
@@ -74,5 +117,20 @@ mod tests {
         // other == total - kept
         let kept: u64 = segs[..12].iter().map(|s| s.value).sum();
         assert_eq!(segs.last().unwrap().value, sum - kept);
+    }
+
+    #[test]
+    fn identity_colors_are_stable_unique_until_the_palette_is_full_and_then_gray() {
+        let home = identity_colors(["chrome"])[0];
+        assert_eq!(identity_colors(["CHROME"])[0], home);
+        let non_conflicting = (0..100).map(|i| format!("candidate-{i}"))
+            .find(|identity| identity_colors([identity.as_str()])[0] != home).unwrap();
+        assert_eq!(identity_colors([non_conflicting.as_str(), "chrome"])[1], home);
+
+        let names: Vec<String> = (0..PALETTE.len() + 2).map(|i| format!("process-{i}")).collect();
+        let colors = identity_colors(names.iter().map(String::as_str));
+        let unique: std::collections::HashSet<Color> = colors[..PALETTE.len()].iter().copied().collect();
+        assert_eq!(unique.len(), PALETTE.len());
+        assert!(colors[PALETTE.len()..].iter().all(|color| *color == OTHER));
     }
 }

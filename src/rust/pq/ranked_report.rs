@@ -20,6 +20,24 @@ pub struct Row {
     pub details: Vec<String>,
 }
 
+/// One independently-normalized ring in a multi-ring graphic. `values` is aligned with `rows`,
+/// which keeps an identity's palette color stable across rings even when its value is zero in one.
+/// Text and JSON retain their existing row-oriented representation.
+#[derive(Debug)]
+pub struct Ring {
+    pub label: &'static str,
+    pub values: Vec<u64>,
+}
+
+/// Optional aligned columns for reports whose dimensions deserve first-class table cells rather
+/// than a prose summary. Rows are aligned with `Report::rows`; all cells are right-aligned and the
+/// process identity remains the final column.
+#[derive(Debug)]
+pub struct Table {
+    pub headers: Vec<&'static str>,
+    pub rows: Vec<Vec<String>>,
+}
+
 #[derive(Debug)]
 pub struct Report {
     pub mode: &'static str,
@@ -27,6 +45,8 @@ pub struct Report {
     pub value_label: &'static str,
     pub value_kind: ValueKind,
     pub rows: Vec<Row>,
+    pub rings: Vec<Ring>,
+    pub table: Option<Table>,
     pub empty_message: &'static str,
 }
 
@@ -48,25 +68,72 @@ impl Report {
 
     fn write_text<W: Write>(&self, out: &mut W, options: &Options, context: RenderContext) -> io::Result<()> {
         self.write_header(out, context)?;
-        self.write_rows(out, options, context, false)
+        self.write_rows(out, options, context, false, true)
     }
 
-    fn write_rows<W: Write>(&self, out: &mut W, options: &Options, context: RenderContext, swatches: bool) -> io::Result<()> {
+    fn write_rows<W: Write>(&self, out: &mut W, options: &Options, context: RenderContext,
+        swatches: bool, summaries: bool) -> io::Result<()> {
         let shown: Vec<&Row> = self.rows.iter().take(options.top).collect();
         if shown.is_empty() {
             writeln!(out, "{}", dim(self.empty_message, context.colors))?;
             return Ok(());
         }
+        if let Some(table) = &self.table {
+            return self.write_table(out, &shown, table, options, context, swatches);
+        }
         let largest = shown.iter().map(|row| row.value).max().unwrap_or(0);
+        let row_colors = chart::identity_colors(shown.iter().map(|row| row.identity.as_str()));
         let indent = if swatches { "    " } else { "" };
         writeln!(out, "{}", dim(&format!("{}{:>10}  {:<20}  process", indent, self.value_label, "activity"), context.colors))?;
         for (rank, row) in shown.into_iter().enumerate() {
             if swatches {
-                write!(out, "{}  ", color_swatch(style::PALETTE.get(rank).copied().unwrap_or(style::OTHER_COLOR), context.colors))?;
+                write!(out, "{}  ", color_swatch(row_colors[rank], context.colors))?;
             }
             let fill = if largest > 0 { chart::bar_fill(row.value as f64 / largest as f64, chart::BAR_WIDTH) } else { 0 };
             let bar = format!("{}{}", "#".repeat(fill), ".".repeat(chart::BAR_WIDTH - fill));
-            writeln!(out, "{:>10}  {}  {}  {}", value_text(row.value, self.value_kind), dim(&bar, context.colors), row.identity, row.summary)?;
+            let summary = if summaries && !row.summary.is_empty() { format!("  {}", row.summary) } else { String::new() };
+            writeln!(out, "{:>10}  {}  {}{}", value_text(row.value, self.value_kind), dim(&bar, context.colors), row.identity, summary)?;
+            if options.verbose {
+                for detail in &row.details { writeln!(out, "{}  {}", indent, dim(detail, context.colors))?; }
+            }
+        }
+        Ok(())
+    }
+
+    fn write_table<W: Write>(&self, out: &mut W, shown: &[&Row], table: &Table, options: &Options,
+        context: RenderContext, swatches: bool) -> io::Result<()> {
+        let widths: Vec<usize> = table.headers.iter().enumerate().map(|(column, header)| {
+            table.rows.iter().take(shown.len()).filter_map(|row| row.get(column))
+                .map(|cell| cell.len()).fold(header.len(), usize::max)
+        }).collect();
+        let numeric: Vec<bool> = table.headers.iter().enumerate().map(|(column, _)| {
+            table.rows.iter().take(shown.len()).filter_map(|row| row.get(column))
+                .all(|cell| numeric_cell(cell))
+        }).collect();
+        let indent = if swatches { "    " } else { "" };
+        let mut heading = indent.to_string();
+        for (column, header) in table.headers.iter().enumerate() {
+            if numeric[column] {
+                heading.push_str(&format!("{:>width$}  ", header, width = widths[column]));
+            } else {
+                heading.push_str(&format!("{:<width$}  ", header, width = widths[column]));
+            }
+        }
+        heading.push_str("process");
+        writeln!(out, "{}", dim(&heading, context.colors))?;
+        let row_colors = chart::identity_colors(shown.iter().map(|row| row.identity.as_str()));
+        for (rank, row) in shown.iter().enumerate() {
+            if swatches { write!(out, "{}  ", color_swatch(row_colors[rank], context.colors))?; }
+            let cells = table.rows.get(rank);
+            for (column, width) in widths.iter().enumerate() {
+                let cell = cells.and_then(|row| row.get(column)).map(String::as_str).unwrap_or("");
+                if numeric[column] {
+                    write!(out, "{:>width$}  ", cell, width = width)?;
+                } else {
+                    write!(out, "{:<width$}  ", cell, width = width)?;
+                }
+            }
+            writeln!(out, "{}", row.identity)?;
             if options.verbose {
                 for detail in &row.details { writeln!(out, "{}  {}", indent, dim(detail, context.colors))?; }
             }
@@ -85,19 +152,50 @@ impl Report {
         mut draw: impl FnMut(&image::DynamicImage, &viuer::Config) -> bool) -> io::Result<()> {
         self.write_header(out, context)?;
         if matches!(self.value_kind, ValueKind::Score | ValueKind::Percent) {
-            return self.write_rows(out, options, context, false);
+            return self.write_rows(out, options, context, false, true);
+        }
+        if !self.rings.is_empty() {
+            let rings = self.ring_slices(options);
+            if rings.is_empty() { return self.write_rows(out, options, context, false, true); }
+            let image = donut::build_core_rings_image(
+                &rings.iter().map(|(_, slices)| slices.clone()).collect::<Vec<_>>(), chart::DONUT_PX);
+            out.flush()?;
+            let config = viuer::Config { absolute_offset: false, width: Some(40), height: Some(20), ..Default::default() };
+            if !draw(&image, &config) {
+                return self.write_rows(out, options, context, false, true);
+            }
+            let labels = rings.iter().map(|(label, _)| *label).collect::<Vec<_>>().join(" · ");
+            writeln!(out, "{}", dim(&format!("rings outside → in: {labels}"), context.colors))?;
+            return self.write_rows(out, options, context, true, false);
         }
         let items: Vec<(String, u64)> = self.rows.iter().map(|row| (row.identity.clone(), row.value)).collect();
         let total = items.iter().map(|(_, value)| *value).sum();
-        if total == 0 { return self.write_rows(out, options, context, false); }
-        let segments = chart::segments(&items, total, options.top.min(style::PALETTE.len()));
+        if total == 0 { return self.write_rows(out, options, context, false, true); }
+        let segments = chart::identity_segments(&items, total, options.top);
         let image = donut::build_donut_image(&chart::slices(&segments), chart::DONUT_PX);
         out.flush()?;
         let config = viuer::Config { absolute_offset: false, width: Some(40), height: Some(20), ..Default::default() };
         if !draw(&image, &config) {
-            return self.write_rows(out, options, context, false);
+            return self.write_rows(out, options, context, false, true);
         }
-        self.write_rows(out, options, context, true)
+        self.write_rows(out, options, context, true, true)
+    }
+
+    /// Build category rings using each row's stable identity color, rather than category-local
+    /// rank. An identity therefore keeps the same color in every ring. Empty categories are omitted.
+    fn ring_slices<'a>(&'a self, options: &Options) -> Vec<(&'a str, Vec<donut::Slice>)> {
+        let visible = self.rows.len().min(options.top).min(style::PALETTE.len());
+        let colors = chart::identity_colors(self.rows.iter().take(visible).map(|row| row.identity.as_str()));
+        self.rings.iter().filter_map(|ring| {
+            let total: u64 = ring.values.iter().sum();
+            if total == 0 { return None; }
+            let mut slices: Vec<donut::Slice> = (0..visible).map(|rank| {
+                (ring.values.get(rank).copied().unwrap_or(0), colors[rank])
+            }).collect();
+            let shown: u64 = slices.iter().map(|(value, _)| *value).sum();
+            if total > shown { slices.push((total - shown, style::OTHER_COLOR)); }
+            Some((ring.label, slices))
+        }).collect()
     }
 
     fn write_json<W: Write>(&self, out: &mut W, options: &Options, compact: bool) -> io::Result<()> {
@@ -111,6 +209,10 @@ impl Report {
             .map_err(io::Error::other)?;
         writeln!(out)
     }
+}
+
+fn numeric_cell(value: &str) -> bool {
+    value == "unlimited" || value.as_bytes().first().is_some_and(|byte| byte.is_ascii_digit() || *byte == b'-')
 }
 
 fn value_text(value: u64, kind: ValueKind) -> String {
@@ -128,7 +230,7 @@ mod tests {
     fn report() -> Report {
         Report { mode: "test", title: "test", value_label: "items", value_kind: ValueKind::Count,
             rows: vec![Row { identity: "alpha".into(), value: 10, summary: "ten".into(), details: vec!["pid 1".into()] }],
-            empty_message: "empty" }
+            rings: Vec::new(), table: None, empty_message: "empty" }
     }
 
     #[test]
@@ -175,5 +277,39 @@ mod tests {
             }).unwrap();
             assert!(String::from_utf8(output).unwrap().contains("alpha"));
         }
+    }
+
+    #[test]
+    fn category_rings_keep_row_colors_fold_hidden_values_and_replace_graphical_summaries() {
+        let mut report = report();
+        report.rows.push(Row { identity: "beta".into(), value: 7, summary: "seven".into(), details: Vec::new() });
+        report.rows.push(Row { identity: "gamma".into(), value: 5, summary: "five".into(), details: Vec::new() });
+        report.rings = vec![
+            Ring { label: "files", values: vec![0, 3, 7] },
+            Ring { label: "sockets", values: vec![0, 0, 0] },
+        ];
+        report.table = Some(Table { headers: vec!["files", "anon"], rows: vec![
+            vec!["0".into(), "10".into()], vec!["3".into(), "4".into()], vec!["7".into(), "1".into()]
+        ] });
+        let options = Options { top: 2, verbose: false, sample_interval_ms: None };
+        let rings = report.ring_slices(&options);
+        assert_eq!(rings.len(), 1);
+        assert_eq!(rings[0].0, "files");
+        let colors = chart::identity_colors(["alpha", "beta"]);
+        assert_eq!(rings[0].1, vec![(0, colors[0]), (3, colors[1]), (7, style::OTHER_COLOR)]);
+
+        let graphics = RenderContext { target: RenderTarget::Graphics, colors: false, width: Some(40) };
+        let mut output = Vec::new();
+        report.write_graphics_with(&mut output, &options, graphics, |_image, _config| true).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains("rings outside → in: files"));
+        assert!(text.contains("files  anon  process"));
+        assert!(!text.contains("ten"));
+
+        let mut fallback = Vec::new();
+        report.write_graphics_with(&mut fallback, &options, graphics, |_image, _config| false).unwrap();
+        let fallback = String::from_utf8(fallback).unwrap();
+        assert!(fallback.contains("files  anon  process"));
+        assert!(!fallback.contains("rings outside"));
     }
 }

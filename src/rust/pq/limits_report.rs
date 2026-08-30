@@ -5,7 +5,7 @@ use std::fs;
 
 use crate::pq::cluster;
 use crate::pq::proc;
-use crate::pq::ranked_report::{Report, Row, ValueKind};
+use crate::pq::ranked_report::{Report, Row, Table, ValueKind};
 
 const WARN_PERCENT: u64 = 75;
 
@@ -33,19 +33,24 @@ pub fn build(procs: &[proc::Proc], allowed: &HashSet<i32>, show_all: bool) -> Re
             });
         }
     }
-    let mut rows: Vec<Row> = groups.into_iter().filter_map(|(identity, mut observations)| {
+    let mut counted: Vec<(Row, Vec<String>)> = groups.into_iter().filter_map(|(identity, mut observations)| {
         observations.sort_by_key(|item| std::cmp::Reverse(item.percent));
         let worst = observations.first()?;
         let summary = format!("{} {} / {}  {}%", label(worst.resource), amount(worst.used, worst.resource),
             amount(worst.soft, worst.resource), worst.percent);
+        let cells = vec![format!("{}%", worst.percent), label(worst.resource).to_string(),
+            amount(worst.used, worst.resource), amount(worst.soft, worst.resource),
+            worst.hard.map_or_else(|| "unlimited".into(), |hard| amount(hard, worst.resource))];
         let details = observations.iter().map(|item| format!("pid {}  {}  used {}  soft {}  hard {}  {}%",
             item.pid, label(item.resource), amount(item.used, item.resource), amount(item.soft, item.resource),
             item.hard.map_or_else(|| "unlimited".into(), |hard| amount(hard, item.resource)), item.percent)).collect();
-        Some(Row { identity, value: worst.percent, summary, details })
+        Some((Row { identity, value: worst.percent, summary, details }, cells))
     }).collect();
-    rows.sort_by_key(|row| std::cmp::Reverse(row.value));
+    counted.sort_by_key(|(row, _)| std::cmp::Reverse(row.value));
+    let (rows, table_rows): (Vec<_>, Vec<_>) = counted.into_iter().unzip();
+    let table = Table { headers: vec!["util", "resource", "used", "soft", "hard"], rows: table_rows };
     Report { mode: "limits", title: "resource-limit utilization", value_label: "percent",
-        value_kind: ValueKind::Percent, rows,
+        value_kind: ValueKind::Percent, rows, rings: Vec::new(), table: Some(table),
         empty_message: if show_all { "no measurable finite limits readable for matching processes" }
             else { "no matching process is at least 75% into a measurable finite limit" } }
 }

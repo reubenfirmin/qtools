@@ -16,11 +16,14 @@ if [ ! -f ./dq ]; then
 fi
 
 mkdir -p "$BIN_DIR"
-cp ./dq "$BIN_DIR/dq"
+# `dq` and `pq` may be symlinks left by an AppImage installation. `cp` follows a
+# destination symlink and would overwrite the shared AppImage; `install` replaces
+# the symlink with the standalone executable instead.
+install -m 0755 ./dq "$BIN_DIR/dq"
 echo "Installed dq to $BIN_DIR/dq"
 
 if [ -f ./pq ]; then
-	cp ./pq "$BIN_DIR/pq"
+	install -m 0755 ./pq "$BIN_DIR/pq"
 	echo "Installed pq to $BIN_DIR/pq"
 fi
 

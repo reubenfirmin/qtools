@@ -141,8 +141,11 @@ fn metadata_at(directory: &fs::File, name: &CStr) -> std::io::Result<EntryMetada
         return Err(std::io::Error::last_os_error());
     }
     let item = unsafe { item.assume_init() };
+    // libc's nlink_t is 32 bits on aarch64 and 64 bits on x86-64.
+    #[allow(clippy::unnecessary_cast)]
+    let links = item.st_nlink as u64;
     Ok(EntryMetadata { apparent: item.st_size as u64, allocated: (item.st_blocks as u64).saturating_mul(512),
-        device: item.st_dev, inode: item.st_ino, links: item.st_nlink, uid: item.st_uid, modified: item.st_mtime, mode: item.st_mode })
+        device: item.st_dev, inode: item.st_ino, links, uid: item.st_uid, modified: item.st_mtime, mode: item.st_mode })
 }
 
 fn secure_root(root: &Path) -> Option<Arc<fs::File>> {
@@ -1221,6 +1224,7 @@ fn glob_match(pattern: &str, value: &str) -> bool {
         let thin = root.join("code/thin/leaf/deep");
         fs::create_dir_all(&large).unwrap(); fs::create_dir_all(&thin).unwrap();
         fs::write(large.join("big"), vec![1_u8; 32 * 1024 * 1024]).unwrap();
+        fs::File::open(large.join("big")).unwrap().sync_all().unwrap();
         for number in 0..200 {
             let directory = thin.join(format!("{number}/nested"));
             fs::create_dir_all(&directory).unwrap(); fs::write(directory.join("tiny"), b"tiny").unwrap();
@@ -1242,6 +1246,9 @@ fn glob_match(pattern: &str, value: &str) -> bool {
         // Grow the same inode inside a formerly small branch. Neither the
         // stale file bit nor the stale branch bit is a bound on its new size.
         fs::write(&growing, vec![2_u8; 48 * 1024 * 1024]).unwrap();
+        // Settle delayed allocation before comparing allocated-block totals
+        // across complete walks; fs::write alone does not flush the file.
+        fs::File::open(&growing).unwrap().sync_all().unwrap();
         assert_eq!(fs::metadata(&growing).unwrap().ino(), inode);
         let precise = summarize_with_bound(&root, &query, None);
         let bytes = precise.levels[0].values().map(|usage| usage.0).sum::<u64>();

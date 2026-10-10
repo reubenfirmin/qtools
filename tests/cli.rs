@@ -2,10 +2,13 @@ use std::fs;
 use std::path::PathBuf;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn state_dir(label: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("qtools-cli-{label}-{}", std::process::id()));
+    static NEXT_STATE: AtomicUsize = AtomicUsize::new(0);
+    let sequence = NEXT_STATE.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("qtools-cli-{label}-{}-{sequence}", std::process::id()));
     let _ = fs::remove_dir_all(&path);
     fs::create_dir_all(path.join("qtools")).unwrap();
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();

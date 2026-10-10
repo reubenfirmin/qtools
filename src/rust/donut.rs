@@ -15,6 +15,32 @@ const DIVIDER_COLOR: [u8; 4] = [90, 90, 96, 255];
 
 pub type Slice = (u64, (u8, u8, u8));
 
+/// A directory arc with a reference used to verify its alignment with the path legend.
+#[derive(Debug)]
+pub struct LabeledSlice {
+    pub value: u64,
+    /// None reserves the angle without painting a child of free or unscanned space.
+    pub color: Option<(u8, u8, u8)>,
+    pub label: String,
+}
+
+/// Directory rings, outside in. All levels share a total, with children ordered
+/// beneath their parents and explicit remainder/free slices to align boundaries.
+pub fn build_sunburst_image(rings: &[Vec<LabeledSlice>], w: u32) -> image::DynamicImage {
+    let mut img = image::RgbaImage::from_pixel(w, w, image::Rgba([0, 0, 0, 0]));
+    let c = w as f64 / 2.0;
+    let inner = w as f64 * 0.16;
+    let thickness = w as f64 * 0.31 / rings.len().max(1) as f64;
+    let gap = (thickness * 0.10).min(3.0);
+    for (level, ring) in rings.iter().enumerate() {
+        let r_out = w as f64 * OUTER_RADIUS - level as f64 * thickness;
+        let r_in = (r_out - thickness + gap).max(inner);
+        let slices: Vec<_> = ring.iter().map(|slice| (slice.value, slice.color)).collect();
+        draw_donut_arcs(&mut img, &slices, c, c, r_out, r_in);
+    }
+    image::DynamicImage::ImageRgba8(img)
+}
+
 /// A single donut on a transparent square canvas, so it floats on the terminal's own background.
 pub fn build_donut_image(slices: &[Slice], w: u32) -> image::DynamicImage {
     let mut img = image::RgbaImage::from_pixel(w, w, image::Rgba([0, 0, 0, 0]));
@@ -115,13 +141,20 @@ pub fn heat(load: f64) -> (u8, u8, u8) {
 
 /// Rasterize one donut centered at (cx, cy) into an existing image.
 fn draw_donut(img: &mut image::RgbaImage, slices: &[Slice], cx: f64, cy: f64, outer: f64, inner: f64) {
+    let arcs: Vec<_> = slices.iter().map(|(value, color)| (*value, Some(*color))).collect();
+    draw_donut_arcs(img, &arcs, cx, cy, outer, inner);
+}
+
+type ArcSlice = (u64, Option<(u8, u8, u8)>);
+
+fn draw_donut_arcs(img: &mut image::RgbaImage, slices: &[ArcSlice], cx: f64, cy: f64, outer: f64, inner: f64) {
     let total: u64 = slices.iter().map(|(size, _)| *size).sum();
     if total == 0 {
         return;
     }
 
     // Arc boundaries, starting at the top and sweeping clockwise.
-    let mut bounds: Vec<(f64, f64, (u8, u8, u8))> = Vec::with_capacity(slices.len());
+    let mut bounds = Vec::with_capacity(slices.len());
     let mut acc = 0.0_f64;
     for (size, color) in slices {
         let start = -FRAC_PI_2 + acc * TAU;
@@ -147,7 +180,7 @@ fn draw_donut(img: &mut image::RgbaImage, slices: &[Slice], cx: f64, cy: f64, ou
         let angle = dy.atan2(dx);
         for (start, end, color) in &bounds {
             if angle_between(angle, start + ARC_GAP, end - ARC_GAP) {
-                return Some(*color);
+                return *color;
             }
         }
         None
@@ -232,6 +265,30 @@ mod tests {
     fn two_ring_image_handles_empty_and_zero_slices_without_panicking() {
         assert_eq!(build_two_ring_image(&[], &[], 100).dimensions(), (100, 100));
         assert_eq!(build_two_ring_image(&[(0, (0, 0, 0))], &[(0, (0, 0, 0))], 100).dimensions(), (100, 100));
+    }
+
+    #[test]
+    fn sunburst_shares_parent_ring_with_free_space_and_leaves_no_children_beneath_it() {
+        let arc = |value, color| LabeledSlice { value, color, label: String::new() };
+        let parent = (200, 100, 40);
+        let child_a = (230, 145, 65);
+        let child_b = (130, 80, 25);
+        let free = (190, 207, 221);
+        let rings = vec![
+            vec![arc(50, Some(parent)), arc(50, Some(free))],
+            vec![arc(25, Some(child_a)), arc(25, Some(child_b)), arc(50, None)],
+        ];
+        let image = build_sunburst_image(&rings, 400).to_rgba8();
+        let rgba = |(r, g, b)| image::Rgba([r, g, b, 255]);
+        assert_eq!(*image.get_pixel(84, 84), rgba(free));
+        assert_eq!(*image.get_pixel(316, 84), rgba(parent));
+        assert_eq!(*image.get_pixel(316, 316), rgba(parent));
+        assert_eq!(*image.get_pixel(271, 129), rgba(child_a));
+        assert_eq!(*image.get_pixel(271, 271), rgba(child_b));
+        assert_eq!(image.get_pixel(129, 129)[3], 0, "free space has no child arc");
+        assert_eq!(image.get_pixel(129, 271)[3], 0, "free space has no child arc");
+        assert_eq!(image.get_pixel(290, 110)[3], 0, "rings have a clear dividing gap");
+        assert_eq!(image.get_pixel(200, 200)[3], 0);
     }
 
     #[test]

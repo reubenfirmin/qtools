@@ -37,14 +37,23 @@ impl Progress {
     }
 
     /**
-     * Record one completed directory. `pending` is the number of scans still outstanding.
+     * Record a completed batch. `pending` is the number of scans still outstanding.
      */
-    pub fn update(&mut self, pending: usize, bytes: u64) {
-        self.update_with_redraw(pending, bytes, self.last_draw.elapsed() >= REDRAW_INTERVAL);
+    pub fn update(&mut self, directories: usize, pending: usize, bytes: u64) {
+        let redraw = self.enabled && self.last_draw.elapsed() >= REDRAW_INTERVAL;
+        self.update_with_redraw(directories, pending, bytes, redraw);
     }
 
-    fn update_with_redraw(&mut self, pending: usize, bytes: u64, redraw: bool) {
-        self.dirs += 1;
+    /// Keep the remaining work visible after traversal has finished.
+    pub fn phase(&mut self, description: &str) {
+        if !self.enabled { return; }
+        let mut out = stderr();
+        let _ = write!(out, "\r{description:<70}");
+        let _ = out.flush();
+    }
+
+    fn update_with_redraw(&mut self, directories: usize, pending: usize, bytes: u64, redraw: bool) {
+        self.dirs += directories as u64;
         self.bytes += bytes;
 
         if !self.enabled {
@@ -112,8 +121,8 @@ mod tests {
     #[test]
     fn disabled_progress_counts_without_drawing() {
         let mut progress = Progress::new_with_terminal(true, false);
-        progress.update_with_redraw(4, 1024, true);
-        assert_eq!(progress.dirs, 1);
+        progress.update_with_redraw(4, 4, 1024, true);
+        assert_eq!(progress.dirs, 4);
         assert_eq!(progress.bytes, 1024);
         assert_eq!(progress.fraction, 0.0);
         let mut output = Vec::new();
@@ -124,11 +133,11 @@ mod tests {
     #[test]
     fn enabled_progress_is_monotonic_draws_frames_and_clears_line() {
         let mut progress = Progress::new_with_terminal(true, true);
-        progress.update_with_redraw(3, 1000, false);
+        progress.update_with_redraw(1, 3, 1000, false);
         assert_eq!(progress.fraction, 0.25);
-        progress.update_with_redraw(20, 2000, false);
+        progress.update_with_redraw(1, 20, 2000, false);
         assert_eq!(progress.fraction, 0.25);
-        progress.update_with_redraw(0, 3000, false);
+        progress.update_with_redraw(1, 0, 3000, false);
         assert_eq!(progress.fraction, 1.0);
 
         let mut output = Vec::new();

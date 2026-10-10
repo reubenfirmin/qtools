@@ -257,6 +257,7 @@ fn dq_json_scan_and_validation_run_end_to_end() {
     let root_text = root.to_str().unwrap();
     let value = successful_json("dq", "scan", &["--json", "--top", "2", root_text]);
     assert!(value.get("rows").is_some());
+    assert!(value.get("filesystem_space").is_none(), "a subdirectory must not claim partition capacity");
 
     let invalid = run("dq", "invalid", &["--depth", "nope", root_text]);
     assert!(!invalid.status.success());
@@ -294,6 +295,12 @@ fn dq_human_views_and_filters_run_end_to_end() {
         let output = run("dq", label, &arguments);
         assert!(output.status.success(), "{label}: {}", String::from_utf8_lossy(&output.stderr));
         assert!(!output.stdout.is_empty(), "{label} produced no report");
+        if label == "directories" {
+            let text = String::from_utf8_lossy(&output.stdout);
+            assert!(!text.contains("[free space"));
+            assert!(!text.contains("Filesystem:"));
+            assert!(text.contains("percentages are of the whole scan"));
+        }
     }
     let jsonl = run("dq", "jsonl", &["--files", "--jsonl", "--all", root_text]);
     assert!(jsonl.status.success());

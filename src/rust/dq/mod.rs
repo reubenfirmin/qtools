@@ -1,5 +1,5 @@
 //! dq: composable disk accounting and filesystem views.
-mod progress; mod dq_query; mod disk_scan; mod dq_report;
+mod progress; mod dq_query; mod disk_scan; mod dq_report; mod hierarchy; mod space; mod pruning; mod directory_tree; mod summary_cache;
 mod cli;
 mod application;
 
@@ -28,7 +28,7 @@ Focused help:
 const HELP_VIEWS: &str = "\
 dq views
 
-  dq DIR                     Directory groups (default depth 1)
+  dq DIR                     Parent directories with significant subdirectories
   dq --files DIR             Largest files recursively
   dq --owners DIR            Allocated bytes grouped by owner
   dq --age DIR               Bytes grouped into modification-age buckets
@@ -57,22 +57,44 @@ dq accounting and traversal
   --apparent                Count logical file lengths
   --one-file-system         Stay on the starting filesystem (default)
   --cross-filesystems       Traverse mounted filesystems too
-  -t, --threads N           Directory worker threads (default 50)
+  --precise                 Walk every directory; disable chart-based early stopping
+  --max-error PERCENT       Unresolved allocation budget (% of capacity; default 3)
+  -t, --threads N           Directory workers (default: CPU parallelism, up to 16)
   --noprogress              Disable progress
 
-Hard links are counted once by device/inode. Symlinks are not followed.";
+Hard links are counted once by device/inode. Symlinks are not followed.
+Directory summaries accumulate totals during the walk instead of retaining every file record.
+At ext4 filesystem roots, the default chart uses measured usage and filesystem used space to
+bound unseen bytes, prioritize promising directories, and stop insignificant branches.
+Incomplete sizes are lower bounds; unresolved space stays visible in the outer ring.
+--max-error bounds the total unresolved allocation, not the error of each directory. Use
+--max-error 0.277 for approximately one degree, or --precise for complete totals.
+--precise, JSON, --all, filters, and other views always complete the walk. Subdirectories and
+filesystems without a suitable allocation bound also complete the walk.";
 
 const HELP_OUTPUT: &str = "\
 dq presentation and output
 
   --top N                   Rows to show (default 15)
-  --depth N                 Directory grouping depth (summary view only)
-  --min-percent PERCENT     Hide groups below this share (default 1)
+  --depth N                 Directory grouping depth (default 1, with subdirectory rings)
+  --min-percent PERCENT     Hide groups below this share of the scan (default 1)
   --all                     Show all groups (-v is a compatibility alias)
   -V, --zeroes              Include empty directory groups
   --errors                  List unreadable paths
   --json / --jsonl          Pretty or one-line machine-readable output
-  --no-color                Disable color and terminal graphics";
+  --no-color                Disable color and terminal graphics
+
+The default directory chart reads from the outside in: parents, children, grandchildren.
+Child arcs stay within their parent's angle; swatches match the path list. The color wheel is
+divided by visible branch complexity, giving busy hierarchies more room for contrasting hues.
+Files here and smaller groups use their parent's hue; root files have their own color.
+Gray marks hidden parent groups and filesystem use outside the scan. At a filesystem mount
+point, allocated, single-filesystem accounting adds free space and other filesystem use to
+the outer parent ring, without child arcs beneath them. Subdirectories use the whole pie.
+Chart and path-list percentages refer to filesystem capacity when shown, otherwise the whole
+scan. Free space includes reserved blocks; available space excludes them.
+Run dq on a listed path to dig deeper; the chart has no mouse interaction.
+--all keeps the grouping depth; use --depth N for a different grouping.";
 
 static HELP_TOPICS: &[Topic] = &[
     Topic { name: "views", aliases: &["files", "owners", "age"], text: HELP_VIEWS },
@@ -83,7 +105,7 @@ static HELP_TOPICS: &[Topic] = &[
 static HELP_CONTEXTS: &[(&[&str], &str)] = &[
     (&["--files", "--owners", "--age"], "views"),
     (&["--exclude", "--exclude-from", "--older-than", "--min-size"], "filters"),
-    (&["--allocated", "--apparent", "--one-file-system", "--cross-filesystems", "--threads", "-t", "--noprogress"], "scan"),
+    (&["--allocated", "--apparent", "--one-file-system", "--cross-filesystems", "--precise", "--max-error", "--threads", "-t", "--noprogress"], "scan"),
     (&["--top", "--depth", "--min-percent", "--all", "--nosummary", "-v", "--zeroes", "-V", "--errors", "--json", "--jsonl", "--no-color"], "output"),
 ];
 

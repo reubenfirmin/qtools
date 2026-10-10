@@ -73,7 +73,60 @@ default, skips symlinks, and deduplicates hard links by device/inode. Allocated 
 the default accounting mode; `--apparent` reports logical lengths instead. Every view uses additive
 groups, rich-terminal donuts or proportional text bars, and the same filter/accounting pipeline.
 
-    dq [dir]                         # directory groups, depth 1
+Directory summaries keep an indexed tree with cumulative bytes and file counts on each node.
+Each directory batch adds its direct usage to its ancestors through integer parent links;
+scheduling and branch stopping use those same nodes. Relative paths are retained only for
+displayed levels, and worker jobs batch several directory reads to amortize dispatch overhead.
+Individual file records are retained only
+for hard-link deduplication. JSON and file, owner, and age views collect detailed
+file facts. Fresh exact totals require visiting every entry: ordinary directory metadata does
+not contain recursive sizes. The default chart can stop branches using bounds as described below.
+The default worker count follows available CPU parallelism, up to 16; `--threads N` overrides it.
+
+The default view shows the distribution across immediate parent directories. Its chart reads
+from the outside in: parents, significant children, then grandchildren, with child arcs aligned
+within their parent's angle. Where a branch has no further displayed detail, its deeper ring
+space is transparent. The color wheel is divided according to each hierarchy's visible
+branches: complex parents get broader hue ranges, and neighboring hierarchies get contrasting
+colors. Swatches in the indented path list match the chart. Smaller subdirectories and files
+use a contrasting shade of their parent's hue; root files have their own color. Gray marks
+hidden parent groups and filesystem use outside the scan. When scanning a filesystem mount
+point with allocated, single-filesystem accounting, free space appears
+alongside directories in the outer parent ring, with no child arcs beneath it. Unscanned
+filesystem use appears as a separate gray arc in that same ring. Chart and path-list percentages
+refer to filesystem capacity when shown; subdirectory scans use the whole pie and percentages
+of the scan. Free space includes
+reserved blocks; the report also gives available space. The path list comes before the chart
+to keep the image visible when a long report scrolls. The report has no mouse interaction: run `dq` on a listed
+path to dig deeper. Text output carries the same directory breakdown. `--all` shows all parent
+groups without changing the grouping depth; `--depth N` selects flat groups at a different depth.
+
+At ext4 filesystem roots, the default scan combines filesystem used space with uniquely
+measured allocations to bound everything unseen. The first run establishes a complete,
+private address index in the system temporary directory. Subsequent runs stream candidates
+in descending estimated bytes per metadata operation, including directory-open cost.
+Cached sizes guide this order; every credited byte comes from fresh metadata. Workers
+combine measurements for the same chart ancestor, and the tree maintains cumulative sizes.
+Incomplete scans preserve the complete index. If the index cannot satisfy the current bound,
+or physical aliases invalidate it, dq completes a fresh traversal and rebuilds the index.
+Unsupported kernels and bind aliases use ordinary traversal. Directory listing size, observed
+yield, and depth guide that traversal; insignificant branches can be deferred, then reopened
+if the global budget still requires their measurements.
+
+Early stopping requires remaining allocation **plus** unresolved hard-link attribution to fit
+within `--max-error PERCENT` of filesystem capacity (default 3%). This single budget covers
+all unfinished branches and inaccessible or otherwise unresolved filesystem use. Reported
+directory sizes remain lower bounds, with unresolved use in the gray outer-ring arc; this is
+not a per-directory error guarantee or a sampled size estimate. `--max-error 0.277` requests
+approximately one degree. `--precise` disables early stopping. JSON, other views, filters,
+`--all`, subdirectory scans, and filesystems without a suitable allocation bound retain a complete walk.
+
+The design draws on [just-in-time filesystem analytics](https://www.usenix.org/legacy/events/fast11/tech/full_papers/Huang.pdf)
+for cost-aware measurement order and [threshold aggregation](https://www.cs.ubc.ca/~laks/cpsc504/fagin-jcss03.pdf)
+for the separation between scheduling hints and fresh lower/upper stopping bounds. It does
+not assume that a historical index proves a directory's current size.
+
+    dq [dir]                        # parents with aligned subdirectory rings
     dq --files --top 30 /var         # largest files recursively
     dq --owners /srv                 # space grouped by file owner
     dq --age /data                   # space grouped by modification age
@@ -83,13 +136,14 @@ groups, rich-terminal donuts or proportional text bars, and the same filter/acco
     dq --depth 2 --min-percent 0.5 /
     dq --cross-filesystems /mnt
     dq --errors /var                 # list unreadable paths
+    dq --precise /data               # complete walk, without chart-based stopping
     dq --json /var | jq .rows
     dq --jsonl --files /var
 
 Examples:
 
     dq /tmp
-    dq --all --threads 50 /tmp
+    dq --all --threads 16 /tmp
     dq --allocated --files --older-than 30d --top 20 /var
     dq --json / > sizes.json
 

@@ -106,6 +106,7 @@ impl Candidates {
         let prior_bytes = u64::from_le_bytes(header[8..16].try_into().ok()?);
         if path_size > 1024 * 1024 || names_size as u64 > MAX_BYTES { return None; }
         let mut path = vec![0; path_size]; self.reader.read_exact(&mut path).ok()?;
+        if path.contains(&0) { return None; }
         let directory = PathBuf::from(OsString::from_vec(path));
         if !directory.components().all(|part| matches!(part, std::path::Component::Normal(_))) { return None; }
         let mut packed = vec![0; names_size]; self.reader.read_exact(&mut packed).ok()?;

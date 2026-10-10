@@ -33,7 +33,7 @@ pub(crate) struct Args {
     #[arg(long)] pub(super) no_color: bool,
     #[arg(long)] pub(super) cross_filesystems: bool,
     #[arg(long, conflicts_with = "cross_filesystems")] pub(super) one_file_system: bool,
-    /// Walk every directory instead of stopping branches below chart significance
+    /// Walk every directory; disable early stopping
     #[arg(long)] pub(super) precise: bool,
     /// Maximum unresolved filesystem allocation as a percentage of capacity
     #[arg(long = "max-error", default_value_t = 3.0)] pub(super) max_error_percent: f64,

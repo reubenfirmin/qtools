@@ -65,7 +65,7 @@ dq accounting and traversal
 Hard links are counted once by device/inode. Symlinks are not followed.
 Directory summaries accumulate totals during the walk instead of retaining every file record.
 At ext4 filesystem roots, the default chart uses measured usage and filesystem used space to
-bound unseen bytes, prioritize promising directories, and stop insignificant branches.
+bound unseen bytes, prioritize productive directories, and stop when the error budget is met.
 Incomplete sizes are lower bounds; unresolved space stays visible in the outer ring.
 --max-error bounds the total unresolved allocation, not the error of each directory. Use
 --max-error 0.277 for approximately one degree, or --precise for complete totals.

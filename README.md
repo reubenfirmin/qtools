@@ -73,12 +73,13 @@ default, skips symlinks, and deduplicates hard links by device/inode. Allocated 
 the default accounting mode; `--apparent` reports logical lengths instead. Every view uses additive
 groups, rich-terminal donuts or proportional text bars, and the same filter/accounting pipeline.
 
-Directory summaries keep an indexed tree with cumulative bytes and file counts on each node.
-Each directory batch adds its direct usage to its ancestors through integer parent links;
-scheduling and branch stopping use those same nodes. Relative paths are retained only for
-displayed levels, and worker jobs batch several directory reads to amortize dispatch overhead.
-Individual file records are retained only
-for hard-link deduplication. JSON and file, owner, and age views collect detailed
+Directory summaries use an indexed tree. Displayed nodes maintain cumulative bytes and file
+counts during the walk; deeper nodes are accumulated once when finishing the summary.
+Each directory batch adds its usage to chart ancestors through integer parent links;
+scheduling and branch stopping use those same live totals. The tree retains relative paths
+only for displayed levels, and worker jobs batch several directory reads to amortize dispatch overhead.
+The summary retains individual file records only for hard-link deduplication.
+JSON and file, owner, and age views collect detailed
 file facts. Fresh exact totals require visiting every entry: ordinary directory metadata does
 not contain recursive sizes. The default chart can stop branches using bounds as described below.
 The default worker count follows available CPU parallelism, up to 16; `--threads N` overrides it.
@@ -101,30 +102,68 @@ to keep the image visible when a long report scrolls. The report has no mouse in
 path to dig deeper. Text output carries the same directory breakdown. `--all` shows all parent
 groups without changing the grouping depth; `--depth N` selects flat groups at a different depth.
 
-At ext4 filesystem roots, the default scan combines filesystem used space with uniquely
-measured allocations to bound everything unseen. The first run establishes a complete,
-private address index in the system temporary directory. Subsequent runs stream candidates
-in descending estimated bytes per metadata operation, including directory-open cost.
-Cached sizes guide this order; every credited byte comes from fresh metadata. Workers
-combine measurements for the same chart ancestor, and the tree maintains cumulative sizes.
-Incomplete scans preserve the complete index. If the index cannot satisfy the current bound,
-or physical aliases invalidate it, dq completes a fresh traversal and rebuilds the index.
-Unsupported kernels and bind aliases use ordinary traversal. Directory listing size, observed
-yield, and depth guide that traversal; insignificant branches can be deferred, then reopened
+### How the default scan stops early
+
+At ext4 filesystem roots, dq uses a **cost-aware best-first scan with a global allocation
+bound**. Filesystem usage, available immediately from the same counters used by `df`, gives
+an upper bound on the allocation left to discover.
+
+1. **Build an address index once.** The first run walks the accessible tree completely and
+   records directory groups, file names, and their allocation totals in a private index in
+   the system temporary directory. The index is bounded in size and retains files with at
+   least 4 KiB allocated. This initial run pays the cost of a complete walk.
+2. **Measure productive directories first.** Later runs stream directory groups in descending
+   estimated return per metadata operation:
+
+   ```text
+   priority = previous allocated bytes / (indexed file count + directory-open cost)
+   ```
+
+   Cached sizes guide scheduling. Every byte credited to the current report comes from fresh
+   metadata. Workers measure files together under an open directory descriptor and combine
+   results for the same chart ancestor before updating the cumulative tree.
+3. **Keep physical allocation and directory attribution separate.** Each measurement adds to
+   its directory and ancestors. Hardlinked storage is counted once; its directory attribution
+   stays unresolved until all links have been observed and the representative path is settled.
+4. **Stop only when the current uncertainty fits the budget.** The stopping condition is:
+
+   ```text
+   uncertainty = filesystem used - uniquely measured allocation
+               + measured hardlink allocation with unresolved attribution
+
+   uncertainty <= filesystem capacity * max_error_percent / 100
+   ```
+
+   Filesystem usage is refreshed before stopping and checked again after outstanding reads
+   finish. One shared budget covers every unfinished branch and inaccessible or otherwise
+   unresolved filesystem use. Reported directory sizes remain lower bounds, and unresolved
+   allocation appears in the gray outer-ring arc.
+
+Historical data determines where to measure next; fresh measurements determine whether dq
+can stop. A newly created or enlarged file remains in the unseen allocation until measured.
+If the index runs out before meeting the bound, or physical aliases invalidate the bound,
+dq completes a fresh traversal and rebuilds the index. Partial scans preserve the complete
+index. Unsupported kernels and bind aliases use ordinary traversal, ordered by directory
+listing size, observed yield, and depth. Insignificant branches can be deferred and reopened
 if the global budget still requires their measurements.
 
-Early stopping requires remaining allocation **plus** unresolved hard-link attribution to fit
-within `--max-error PERCENT` of filesystem capacity (default 3%). This single budget covers
-all unfinished branches and inaccessible or otherwise unresolved filesystem use. Reported
-directory sizes remain lower bounds, with unresolved use in the gray outer-ring arc; this is
-not a per-directory error guarantee or a sampled size estimate. `--max-error 0.277` requests
-approximately one degree. `--precise` disables early stopping. JSON, other views, filters,
-`--all`, subdirectory scans, and filesystems without a suitable allocation bound retain a complete walk.
+`--max-error PERCENT` defaults to 3% of **filesystem capacity**, not used space or each
+directory's size. `--max-error 0.277` requests approximately one degree of the full chart.
+The bound describes unresolved allocation; it is not a per-directory error guarantee or a
+sampled size estimate. `--precise` and `--max-error 0` disable early stopping. JSON, other views,
+filters, `--all`, subdirectory scans, and filesystems without a suitable allocation bound
+retain a complete walk. Like `du`, neither mode provides an atomic snapshot of a changing
+filesystem.
 
 The design draws on [just-in-time filesystem analytics](https://www.usenix.org/legacy/events/fast11/tech/full_papers/Huang.pdf)
 for cost-aware measurement order and [threshold aggregation](https://www.cs.ubc.ca/~laks/cpsc504/fagin-jcss03.pdf)
 for the separation between scheduling hints and fresh lower/upper stopping bounds. It does
 not assume that a historical index proves a directory's current size.
+
+In three alternating warm comparisons on `/expanse` (about 405,000 directories), the default
+mode had a median of 0.75 seconds versus 1.36 seconds for `--precise`, visiting about 123,000
+directories: roughly 70% fewer visits and 1.8 times faster. These measurements include scanning
+and text reporting after the initial index build; they exclude terminal graphics rendering.
 
     dq [dir]                        # parents with aligned subdirectory rings
     dq --files --top 30 /var         # largest files recursively

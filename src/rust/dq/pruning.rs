@@ -35,6 +35,7 @@ pub(super) struct Bound {
     large_inodes: HashMap<u64, Box<[u64; 1024]>>,
     valid: bool,
     check_file_inodes: bool,
+    trust_link_counts: bool,
     mount_layout: Option<Vec<u8>>,
 }
 
@@ -47,6 +48,9 @@ impl Bound {
             || !query.selection.excludes.is_empty() { return None; }
         let space = Space::allocation_bound(root)?;
         let mut bound = Self::new(space.used_bytes, space.capacity_bytes);
+        // A file bind mount can expose one link at several paths. Until the
+        // layout excludes aliases, nlink cannot certify complete attribution.
+        bound.trust_link_counts = false;
         if let (Ok(canonical), Ok(metadata), Ok(layout)) =
             (fs::canonicalize(root), fs::metadata(root), fs::read("/proc/self/mountinfo")) {
             let device = format!("{}:{}", libc::major(metadata.dev()), libc::minor(metadata.dev()));
@@ -55,6 +59,7 @@ impl Bound {
                 // Without bind aliases, its allocation can be summed per
                 // batch rather than recorded individually in the bitmap.
                 bound.check_file_inodes = false;
+                bound.trust_link_counts = true;
                 bound.mount_layout = Some(layout);
             }
         }
@@ -63,14 +68,16 @@ impl Bound {
 
     pub fn new(used: u64, capacity: u64) -> Self {
         Self { used, capacity, accounted: 0, inodes: Vec::new(), large_inodes: HashMap::new(), valid: true,
-            check_file_inodes: true, mount_layout: None }
+            check_file_inodes: true, trust_link_counts: true, mount_layout: None }
     }
 
     pub fn check_file_inodes(&self) -> bool { self.check_file_inodes }
-    pub fn use_worker_checks(&mut self) { self.check_file_inodes = false; }
+    pub fn can_settle_links(&self) -> bool { self.trust_link_counts }
     pub fn account_file_bytes(&mut self, bytes: u64) { self.accounted = self.accounted.saturating_add(bytes); }
     #[cfg(test)]
     pub fn with_file_inode_checks(mut self, enabled: bool) -> Self { self.check_file_inodes = enabled; self }
+    #[cfg(test)]
+    pub fn without_trusted_link_counts(mut self) -> Self { self.trust_link_counts = false; self }
 
     pub fn record(&mut self, inode: u64, bytes: u64) {
         if !self.check_file_inodes {
@@ -109,7 +116,14 @@ impl Bound {
     pub fn invalidate(&mut self) { self.valid = false; }
 
     pub fn refresh(&mut self, root: &Path) {
-        if let Some(space) = Space::read(root) { self.used = self.used.max(space.used_bytes); }
+        if let Some(space) = Space::read(root) {
+            self.used = self.used.max(space.used_bytes);
+            self.capacity = space.capacity_bytes;
+        } else if self.mount_layout.is_some() {
+            // A checked filesystem root must remain readable for the final
+            // allocation certificate to refer to the same filesystem.
+            self.valid = false;
+        }
         if self.mount_layout.as_ref().is_some_and(|layout|
             fs::read("/proc/self/mountinfo").ok().as_ref() != Some(layout)) { self.valid = false; }
     }

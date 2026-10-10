@@ -1006,7 +1006,10 @@ fn glob_match(pattern: &str, value: &str) -> bool {
             let directory = leaf.join(format!("tail/{number}/nested"));
             fs::create_dir_all(&directory).unwrap(); fs::write(directory.join("tiny"), b"tiny").unwrap();
         }
-        let query = DiskQuery::from_args(&Args::try_parse_from(["dq", "--threads", "2", "--noprogress"]).unwrap()).unwrap();
+        // Keep the leading measurement ahead of the tiny index's tail. With
+        // parallel workers, the tail can finish first and correctly trigger a
+        // complete fallback, making the early-stop assertion timing-dependent.
+        let query = DiskQuery::from_args(&Args::try_parse_from(["dq", "--threads", "1", "--noprogress"]).unwrap()).unwrap();
         let exact = summarize_with_bound(&root, &query, None);
         let bytes = exact.levels[0].values().map(|usage| usage.0).sum::<u64>();
         let mut learned = summarize_with_hints(&root, &query, Some(Bound::new(bytes + 100 * 1024 * 1024, bytes * 2)), &[], Arc::default(), true);

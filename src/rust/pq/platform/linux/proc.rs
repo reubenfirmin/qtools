@@ -29,8 +29,6 @@ pub struct Proc {
     pub cmdline: Vec<String>,
     pub rss: u64,
     pub swap: u64,
-    // Not read yet in Stage 2's report; carried through for the Stage 4 kill preview's user column.
-    #[allow(dead_code)]
     pub uid: u32,
     pub cpu_pct: f64
 }

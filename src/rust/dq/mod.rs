@@ -1,5 +1,5 @@
 //! dq: composable disk accounting and filesystem views.
-mod progress; mod dq_query; mod disk_scan; mod dq_report; mod hierarchy; mod space; mod pruning; mod directory_tree; mod summary_cache;
+mod progress; mod dq_query; mod disk_scan; mod dq_report; mod hierarchy; mod space; mod pruning; mod directory_tree;
 mod cli;
 mod application;
 

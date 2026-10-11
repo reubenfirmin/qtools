@@ -1,8 +1,6 @@
-//! Indexed scan tree. Chart ancestors stay cumulative during traversal; deeper
+//! In-memory scan tree. Chart ancestors stay cumulative during traversal; deeper
 //! totals are accumulated once at the end instead of on every observation.
 use std::path::{Path, PathBuf};
-use std::collections::HashMap;
-use std::ffi::OsString;
 
 use super::hierarchy::Totals;
 
@@ -14,18 +12,9 @@ pub(super) struct Node {
     pub depth: usize,
     pub bytes: u64,
     pub files: u64,
-    pub visited: u64,
     pub yield_bytes: u64,
     pub yield_cost: u64,
-    pub inode: u64,
-    pub has_large_files: bool,
-    pub largest_direct_hint: u64,
-    pub hint_cost: u64,
-    pub completed: bool,
-    pub listed: bool,
-    pub scheduled: bool,
     pub metadata_counted: bool,
-    pub pending_batches: usize,
     pub path: Option<PathBuf>,
     direct: (u64, u64),
     direct_present: bool,
@@ -40,38 +29,22 @@ pub(super) struct DirectoryTree {
     pub nodes: Vec<Node>,
     report_nodes: Vec<NodeId>,
     report_depth: usize,
-    seeds: HashMap<NodeId, HashMap<OsString, NodeId>>,
 }
 
 impl DirectoryTree {
     pub fn new(report_depth: usize) -> Self {
-        Self { nodes: vec![Node { parent: NONE, depth: 0, bytes: 0, files: 0, visited: 0, yield_bytes: 0, yield_cost: 0, inode: 0, has_large_files: false, largest_direct_hint: 0, hint_cost: 0, completed: false,
-            listed: false, scheduled: true, metadata_counted: false, pending_batches: 0, path: Some(PathBuf::new()), direct: (0, 0), direct_present: false, present: false,
+        Self { nodes: vec![Node { parent: NONE, depth: 0, bytes: 0, files: 0, yield_bytes: 0, yield_cost: 0,
+            metadata_counted: false, path: Some(PathBuf::new()), direct: (0, 0), direct_present: false, present: false,
             branch: 0, first_child: NONE, next_sibling: NONE, closed: false }],
-            report_nodes: vec![0], report_depth, seeds: HashMap::new() }
-    }
-
-    pub fn ensure_path(&mut self, relative: &Path) -> NodeId {
-        let mut parent = 0;
-        let mut prefix = PathBuf::new();
-        for name in relative.components() {
-            prefix.push(name);
-            let id = self.add_child(parent, &prefix);
-            if id + 1 == self.nodes.len() {
-                self.seeds.entry(parent).or_default().entry(name.as_os_str().to_os_string()).or_insert(id);
-            }
-            parent = id;
-        }
-        parent
+            report_nodes: vec![0], report_depth }
     }
 
     pub fn add_child(&mut self, parent: NodeId, relative: &Path) -> NodeId {
-        if let Some(id) = self.seeds.get(&parent).and_then(|children| children.get(relative.file_name().unwrap_or_default())) { return *id; }
         let id = self.nodes.len();
         let depth = self.nodes[parent].depth + 1;
         let displayed = depth <= self.report_depth;
-        self.nodes.push(Node { parent, depth, bytes: 0, files: 0, visited: 0, yield_bytes: 0, yield_cost: 0, inode: 0, has_large_files: false, largest_direct_hint: 0, hint_cost: 0, completed: false,
-            listed: false, scheduled: false, metadata_counted: false, pending_batches: 0, path: displayed.then(|| relative.to_path_buf()), direct: (0, 0), direct_present: false, present: false,
+        self.nodes.push(Node { parent, depth, bytes: 0, files: 0, yield_bytes: 0, yield_cost: 0,
+            metadata_counted: false, path: displayed.then(|| relative.to_path_buf()), direct: (0, 0), direct_present: false, present: false,
             branch: if displayed { id } else { self.nodes[parent].branch },
             first_child: NONE, next_sibling: self.nodes[parent].first_child, closed: false });
         self.nodes[parent].first_child = id;
@@ -87,13 +60,11 @@ impl DirectoryTree {
         let branch = self.nodes[id].branch;
         if branch != id {
             let node = &mut self.nodes[id];
-            node.visited += 1;
             if included { node.bytes += bytes; node.files += files; node.present = true; }
         }
         let mut ancestor = branch;
         while ancestor != NONE {
             let node = &mut self.nodes[ancestor];
-            node.visited += 1;
             if included { node.bytes += bytes; node.files += files; node.present = true; }
             ancestor = node.parent;
         }
@@ -134,27 +105,16 @@ impl DirectoryTree {
     }
 
     pub fn finish_deep_totals(&mut self) {
-        for node in &mut self.nodes { node.largest_direct_hint /= node.hint_cost.max(1); }
         // Parent IDs precede child IDs. Report nodes already include every
         // descendant; only the deeper nodes need this child-first accumulation.
         for id in (1..self.nodes.len()).rev() {
             let parent = self.nodes[id].parent;
-            self.nodes[parent].largest_direct_hint = self.nodes[parent].largest_direct_hint.max(self.nodes[id].largest_direct_hint);
-            self.nodes[parent].completed &= self.nodes[id].completed;
             if self.nodes[parent].depth <= self.report_depth { continue; }
-            let (bytes, files, visited, present) = {
-                let node = &self.nodes[id]; (node.bytes, node.files, node.visited, node.present)
+            let (bytes, files, present) = {
+                let node = &self.nodes[id]; (node.bytes, node.files, node.present)
             };
             let node = &mut self.nodes[parent];
-            node.bytes += bytes; node.files += files; node.visited += visited; node.present |= present;
-        }
-    }
-
-    pub fn mark_large(&mut self, id: NodeId) {
-        let mut ancestor = id;
-        while ancestor != NONE && !self.nodes[ancestor].has_large_files {
-            self.nodes[ancestor].has_large_files = true;
-            ancestor = self.nodes[ancestor].parent;
+            node.bytes += bytes; node.files += files; node.present |= present;
         }
     }
 
@@ -221,7 +181,6 @@ mod tests {
         assert_eq!(tree.nodes[code].bytes, 160);
         assert_eq!(tree.nodes[sites].bytes, 150);
         assert_eq!(tree.nodes[leaf].bytes, 130);
-        assert_eq!(tree.nodes[0].visited, 5);
         let levels = tree.levels(&[1, 2, 3]);
         assert_eq!(levels[0][Path::new("code")], (160, 5));
         assert_eq!(levels[1][Path::new("code")], (10, 1));
@@ -246,11 +205,11 @@ mod tests {
         tree.observe(deep, 20, 1, true);
         tree.observe(leaf, 30, 2, true);
         tree.add_usage(leaf, 40, 1);
-        assert_eq!((tree.nodes[shown].bytes, tree.nodes[shown].files, tree.nodes[shown].visited), (102, 4, 2));
+        assert_eq!((tree.nodes[shown].bytes, tree.nodes[shown].files), (102, 4));
         tree.finish_deep_totals();
-        assert_eq!((tree.nodes[deep].bytes, tree.nodes[deep].files, tree.nodes[deep].visited), (102, 4, 2));
-        assert_eq!((tree.nodes[leaf].bytes, tree.nodes[leaf].files, tree.nodes[leaf].visited), (78, 3, 1));
-        assert_eq!((tree.nodes[shown].bytes, tree.nodes[shown].files, tree.nodes[shown].visited), (102, 4, 2));
+        assert_eq!((tree.nodes[deep].bytes, tree.nodes[deep].files), (102, 4));
+        assert_eq!((tree.nodes[leaf].bytes, tree.nodes[leaf].files), (78, 3));
+        assert_eq!((tree.nodes[shown].bytes, tree.nodes[shown].files), (102, 4));
         assert_eq!(tree.nodes[0].bytes, 102);
     }
 }

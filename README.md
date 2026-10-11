@@ -82,7 +82,7 @@ default, skips symlinks, and deduplicates hard links by device/inode. Allocated 
 the default accounting mode; `--apparent` reports logical lengths instead. Every view uses additive
 groups, rich-terminal donuts or proportional text bars, and the same filter/accounting pipeline.
 
-Directory summaries use an indexed tree. Displayed nodes maintain cumulative bytes and file
+Directory summaries use an in-memory tree. Displayed nodes maintain cumulative bytes and file
 counts during the walk; deeper nodes are accumulated once when finishing the summary.
 Each directory batch adds its usage to chart ancestors through integer parent links;
 scheduling and branch stopping use those same live totals. The tree retains relative paths
@@ -121,31 +121,17 @@ At ext4 filesystem roots, dq uses a **cost-aware best-first scan with a global a
 bound**. Filesystem usage, available immediately from the same counters used by `df`, gives
 an upper bound on the allocation left to discover.
 
-1. **Sample live directories for scheduling.** Without an index, workers list directories
+1. **Sample live directories for scheduling.** Workers list directories
    under an open descriptor and measure up to eight regular files spread across the listing.
    Child metadata is read when the child is opened. Fresh allocation per file guides the
    order of subsequent reads. Pending priorities are refreshed as new samples arrive.
    Tiny-file tails use short batches and stay
    behind unopened directories, letting the scan discover productive branches first.
    Samples guide scheduling only; they never supply estimated bytes to the report or bound.
-2. **Use historical addresses when available.** A naturally completed scan records directory
-   groups, file names, and allocation totals in a private index in the system temporary
-   directory. A missing index does not require an initial complete walk. Partial scans leave
-   existing indexes untouched. Equivalent root paths share the same index, including running
-   `dq` from the mount point. Indexed runs stream directory groups in descending estimated
-   return per metadata operation:
-
-   ```text
-   priority = previous allocated bytes / (indexed file count + directory-open cost)
-   ```
-
-   Cached sizes guide scheduling. Every byte credited to the current report comes from fresh
-   metadata. Workers measure files together under an open directory descriptor and combine
-   results for the same chart ancestor before updating the cumulative tree.
-3. **Keep physical allocation and directory attribution separate.** Each measurement adds to
+2. **Keep physical allocation and directory attribution separate.** Each measurement adds to
    its directory and ancestors. Hardlinked storage is counted once; its directory attribution
    stays unresolved until all links have been observed and the representative path is settled.
-4. **Stop only when the current uncertainty fits the budget.** The stopping condition is:
+3. **Stop only when the current uncertainty fits the budget.** The stopping condition is:
 
    ```text
    uncertainty = filesystem used - uniquely measured allocation
@@ -159,15 +145,13 @@ an upper bound on the allocation left to discover.
    unresolved filesystem use. Reported directory sizes remain lower bounds, and unresolved
    allocation appears in the gray outer-ring arc.
 
-Historical data and live samples guide where to measure next; fresh measurements determine whether dq
-can stop. A newly created or enlarged file remains in the unseen allocation until measured.
-If the index runs out before meeting the bound, physical aliases invalidate the bound, or
-the indexed pass takes two seconds without meeting the budget, dq starts fresh live sampling
-with a newly checked allocation bound. An invalid pass stops scheduling measurements immediately;
-work already dispatched finishes before traversal starts. A naturally completed traversal
-rebuilds the index. Unsupported kernels and bind aliases use live traversal, ordered by
-freshly observed yield and depth. Insignificant branches can be deferred and reopened
-if the global budget still requires their measurements.
+Live samples guide where to measure next; fresh measurements determine whether dq can stop.
+A newly created or enlarged file remains in the unseen allocation until measured. Insignificant
+branches can be deferred and reopened if the global budget still requires their measurements.
+If the final usage check exceeds the budget, the same scan resumes its deferred work without
+remeasuring completed files. If physical aliases or changed metadata invalidate allocation
+accounting, dq discards that attempt before making one complete traversal. Scans do not read
+or write a persistent filesystem index.
 
 `--max-error PERCENT` defaults to 3% of **filesystem capacity**, not used space or each
 directory's size. `--max-error 0.277` requests approximately one degree of the full chart.
@@ -179,13 +163,10 @@ filesystem.
 
 The design draws on [just-in-time filesystem analytics](https://www.usenix.org/legacy/events/fast11/tech/full_papers/Huang.pdf)
 for cost-aware measurement order and [threshold aggregation](https://www.cs.ubc.ca/~laks/cpsc504/fagin-jcss03.pdf)
-for the separation between scheduling hints and fresh lower/upper stopping bounds. It does
-not assume that a historical index proves a directory's current size.
+for the separation between scheduling hints and fresh lower/upper stopping bounds.
 
-To measure live traversal without historical indexes, run with `QTOOLS_NO_CACHE=1`.
 `QTOOLS_PROFILE=1` reports scan time, work counts, and allocation progress. Compare default
-and `--precise` runs under the same filesystem-cache conditions; indexed runs measure a
-different path and do not demonstrate live sampling performance.
+and `--precise` runs under the same filesystem-cache conditions.
 
     dq [dir]                        # parents with aligned subdirectory rings
     dq --files --top 30 /var         # largest files recursively

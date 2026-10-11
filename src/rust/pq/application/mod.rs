@@ -1,7 +1,8 @@
-use crate::render::{self, RenderContext};
+use crate::render::{self, RenderContext, RenderTarget};
 
 use super::{cluster, proc, report, selection, tree_report};
 use super::pq_query::{Action, QueryPlan, View};
+use super::cluster::Metric;
 
 mod commands;
 
@@ -20,20 +21,22 @@ pub(super) fn execute(plan: &QueryPlan) -> Result<(), String> {
     }
 
     let metric = plan.metric;
+    let context = RenderContext::detect(plan.output);
+    let core_rings = !plan.tree && metric == Metric::Cpu && context.target == RenderTarget::Graphics;
 
     // Always take the two-sample CPU delta (even in --memory mode) so both the cpu and memory
     // columns are real numbers, not a fake 0. The interval is small; --kill exits before here.
-    // The per-core /proc/stat samples ride along at the same two points, for --cpu's per-core rings.
+    // Per-core samples and thread attribution are needed only for CPU graphics.
     let prev = proc::snapshot();
-    let stat0 = proc::cpu_stat();
+    let stat0 = core_rings.then(proc::cpu_stat);
     let sample_started = std::time::Instant::now();
     std::thread::sleep(std::time::Duration::from_millis(plan.interval_ms));
     let cur = proc::snapshot();
-    let stat1 = proc::cpu_stat();
+    let stat1 = core_rings.then(proc::cpu_stat);
     let procs = proc::cpu_percent(&prev, &cur, sample_started.elapsed().as_secs_f64());
-    let core_loads = proc::per_core_busy(&stat0, &stat1);
+    let core_loads = stat0.zip(stat1).map_or_else(Vec::new, |(prev, cur)| proc::per_core_busy(&prev, &cur));
     // Which process(es) actually ran on each core, for the --cpu donut's process-colored rings.
-    let attribution = proc::per_core_attribution(&procs);
+    let attribution = if core_rings { proc::per_core_attribution(&procs) } else { Vec::new() };
 
     let all_clusters = cluster::cluster(&procs, metric);
     // System-wide, computed before any pattern filter: the header's cpu% is a system total, matching
@@ -46,7 +49,6 @@ pub(super) fn execute(plan: &QueryPlan) -> Result<(), String> {
     let (swap_used, swap_total) = proc::swap_info();
 
     // Colors/width are only meaningful on an interactive terminal; JSON and piped output stay plain.
-    let context = RenderContext::detect(plan.output);
     let opts = report::ReportOpts {
         metric,
         top: plan.output.top.unwrap_or(15),

@@ -5,25 +5,11 @@ use std::fs;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::directory_tree::{DirectoryTree, NodeId};
 use super::dq_query::{DiskQuery, SizeAccounting};
 use super::hierarchy::{MAX_CHILDREN, MIN_PARENT_SHARE};
 use super::space::Space;
-
-/// Indexed probes validate physical uniqueness on their workers, avoiding a
-/// coordinator pass over a vector containing every freshly measured file.
-pub(super) struct AllocationChecks { words: Vec<AtomicU64>, valid: AtomicBool }
-impl AllocationChecks {
-    pub fn new() -> Self { Self { words: (0..1 << 20).map(|_| AtomicU64::new(0)).collect(), valid: AtomicBool::new(true) } }
-    pub fn record(&self, inode: u64) {
-        let fresh = usize::try_from(inode / 64).ok().and_then(|index| self.words.get(index))
-            .is_some_and(|word| word.fetch_or(1 << (inode % 64), Ordering::Relaxed) & (1 << (inode % 64)) == 0);
-        if !fresh { self.valid.store(false, Ordering::Relaxed); }
-    }
-    pub fn valid(&self) -> bool { self.valid.load(Ordering::Relaxed) }
-}
 
 pub(super) struct Bound {
     pub used: u64,
@@ -324,6 +310,15 @@ mod tests {
         assert_eq!(bound.remaining(), Some(40));
         // A bind alias must not make the remaining bound artificially small.
         bound.record(31_000_000, 50);
+        assert_eq!(bound.remaining(), None);
+    }
+
+    #[test] fn sparse_inode_tracking_handles_large_inode_numbers() {
+        let mut bound = Bound::new(100, 200);
+        bound.record(1 << 26, 10);
+        bound.record(u64::MAX, 50);
+        assert_eq!(bound.remaining(), Some(40));
+        bound.record(u64::MAX, 50);
         assert_eq!(bound.remaining(), None);
     }
 }

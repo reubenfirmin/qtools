@@ -160,7 +160,8 @@ def verify_downloads(directory, version):
 
 def download_stable(directory):
     for name in ("version.json", "SHA256SUMS", *sorted(ASSETS)):
-        with urllib.request.urlopen(f"{STABLE}/{name}", timeout=30) as response:
+        request = urllib.request.Request(f"{STABLE}/{name}", headers={"User-Agent": "qtools-release"})
+        with urllib.request.urlopen(request, timeout=30) as response:
             with (directory / name).open("wb") as destination:
                 shutil.copyfileobj(response, destination)
 

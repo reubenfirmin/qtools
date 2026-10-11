@@ -60,6 +60,23 @@ class ReleaseTests(unittest.TestCase):
                 with self.subTest(manifest=invalid), self.assertRaises(ValueError):
                     release.checksum_manifest(invalid)
 
+    def test_stable_download_identifies_client_and_saves_every_asset(self):
+        requests = []
+
+        def response(request, **kwargs):
+            self.assertEqual(request.get_header("User-agent"), "qtools-release")
+            requests.append(request.full_url)
+            return io.BytesIO(request.full_url.encode())
+
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(release.urllib.request, "urlopen", side_effect=response):
+            root = Path(temporary)
+            release.download_stable(root)
+            names = release.ASSETS | {"version.json", "SHA256SUMS"}
+            self.assertEqual(set(requests), {f"{release.STABLE}/{name}" for name in names})
+            for name in names:
+                self.assertEqual((root / name).read_text(), f"{release.STABLE}/{name}")
+
     def test_dirty_checkout_never_bumps_commits_or_pushes(self):
         with patch.object(release, "run", side_effect=["main\n", " M README.md\n"]) as command, \
                 patch.object(release, "bump_version") as bump, \

@@ -6,18 +6,17 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::super::directory_tree::{DirectoryTree, NodeId};
-use super::super::dq_query::{DiskQuery, SizeAccounting};
+use super::super::dq_query::{DiskQuery, FileFilters, SizeAccounting};
 use super::super::pruning::{self, Bound};
 use super::scheduling::{priority, WorkQueue};
 use super::traversal::{walk, Batch, CollectFiles, EntryMetadata, WalkEvent, WalkOptions, Work};
 use super::{FileFact, SummaryScan};
 
 #[derive(Clone, Copy)]
-struct FileSelection { accounting: SizeAccounting, min_size: Option<u64>, older_than: Option<u64>, now: i64 }
+struct FileSelection { accounting: SizeAccounting, filters: FileFilters, now: i64 }
 impl FileSelection {
     fn matches(&self, bytes: u64, modified: i64) -> bool {
-        !self.min_size.is_some_and(|minimum| bytes < minimum)
-            && !self.older_than.is_some_and(|age| self.now.saturating_sub(modified) < age as i64)
+        self.filters.matches(bytes, modified, self.now)
     }
     fn bytes(&self, fact: &FileFact) -> u64 {
         match self.accounting { SizeAccounting::Allocated => fact.allocated, SizeAccounting::Apparent => fact.apparent }
@@ -61,8 +60,7 @@ struct SummaryState<'a> {
 impl<'a> SummaryState<'a> {
     fn new(root: &'a Path, query: &'a DiskQuery, bound: Option<Bound>) -> Self {
         let depths = if query.presentation.depth == 1 { vec![1, 2, 3] } else { vec![query.presentation.depth] };
-        let selection = FileSelection { accounting: query.accounting, min_size: query.selection.min_size,
-            older_than: query.selection.older_than.map(|age| age.as_secs()),
+        let selection = FileSelection { accounting: query.accounting, filters: query.selection.file_filters(),
             now: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64 };
         let bound_device = bound.as_ref().and_then(|_| fs::metadata(root).ok().map(|item| item.dev()));
         Self { root, query, bound, bound_device, selection, tree: DirectoryTree::new(*depths.iter().max().unwrap()), depths,
@@ -108,7 +106,7 @@ impl<'a> SummaryState<'a> {
                 + if batch.directory_visit { 2 + batch.subdirs.len() as u64 } else { 1 });
         }
         if batch.directory_visit {
-            let directory_metadata = self.query.selection.min_size.is_none() && self.query.selection.older_than.is_none();
+            let directory_metadata = !self.query.selection.has_file_filters();
             let new_metadata = !self.tree.nodes[batch.node].metadata_counted;
             let bytes = if new_metadata && directory_metadata && self.query.accounting == SizeAccounting::Allocated { batch.directory.allocated } else { 0 };
             self.tree.observe(batch.node, batch.files.bytes + bytes, batch.files.selected,

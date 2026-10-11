@@ -82,6 +82,12 @@ default, skips symlinks, and deduplicates hard links by device/inode. Allocated 
 the default accounting mode; `--apparent` reports logical lengths instead. Every view uses additive
 groups, rich-terminal donuts or proportional text bars, and the same filter/accounting pipeline.
 
+Reading every file can be slow. For a quick overview, dq can stop with a small amount of
+disk space still unaccounted for: at most 3% of the disk's total capacity by default.
+Use `dq --precise DIR` when you need complete totals. It checks every file and may take longer.
+This shortcut applies to directory summaries of whole supported filesystems; subdirectories,
+filtered scans, `--all`, JSON, and other views already get a full scan.
+
 Directory summaries use an in-memory tree. Displayed nodes maintain cumulative bytes and file
 counts during the walk; deeper nodes are accumulated once when finishing the summary.
 Each directory batch adds its usage to chart ancestors through integer parent links;
@@ -94,26 +100,12 @@ not contain recursive sizes. The default chart can stop branches using bounds as
 The default worker count is 50; `--threads N` overrides it. Metadata reads wait on filesystem
 I/O, so their concurrency is independent of the CPU count.
 
-The default view shows the distribution across immediate parent directories. Its chart reads
-from the outside in: parents, significant children, then grandchildren, with child arcs aligned
-within their parent's angle. Where a branch has no further displayed detail, its deeper ring
-space is transparent. Small views spread directory colors across the whole wheel. Busier
-views divide the wheel according to each hierarchy's visible branches: complex parents get
-broader hue ranges, and neighboring hierarchies get contrasting colors.
-The largest directory starts in blue.
-Swatches in the indented path list match the chart. Smaller subdirectories and files
-use a contrasting shade of their parent's hue; root files have their own color. Gray marks
-hidden parent groups and filesystem use outside the scan. When scanning a filesystem mount
-point with allocated, single-filesystem accounting, free space appears
-alongside directories in the outer parent ring, with no child arcs beneath it. Unscanned
-filesystem use appears as a separate gray arc in that same ring. Chart and path-list percentages
-refer to filesystem capacity when shown; subdirectory scans use the whole pie and percentages
-of the scan. The chart center shows occupied filesystem bytes at mount points and the selected
-scan total in other views. Free space includes
-reserved blocks; the report also gives available space. The path list comes before the chart
-to keep the image visible when a long report scrolls. The report has no mouse interaction: run `dq` on a listed
-path to dig deeper. Text output carries the same directory breakdown. `--all` shows all parent
-groups without changing the grouping depth; `--depth N` selects flat groups at a different depth.
+The default directory view shows up to 15 parent groups, with significant children and
+grandchildren beneath them. `--top N` limits parent groups; children don't count toward
+that limit. Other views show up to 15 rows. `--all` removes the count and percentage limits
+on top-level groups; an explicit `--top` still applies.
+Use `--depth 2` or higher for a flat list grouped at that depth, `--depth 0` for one total,
+or `--depth 1` to return to the tree view. Run `dq PATH` to inspect a directory more closely.
 
 ### How the default scan stops early
 
@@ -168,19 +160,30 @@ for the separation between scheduling hints and fresh lower/upper stopping bound
 `QTOOLS_PROFILE=1` reports scan time, work counts, and allocation progress. Compare default
 and `--precise` runs under the same filesystem-cache conditions.
 
-    dq [dir]                        # parents with aligned subdirectory rings
+    dq [dir]                        # directory tree
     dq --files --top 30 /var         # largest files recursively
     dq --owners /srv                 # space grouped by file owner
     dq --age /data                   # space grouped by modification age
     dq --apparent /data              # logical rather than allocated size
     dq --exclude cache --exclude '*.tmp' .
+    dq --exclude-from exclusions.txt . # exclusion patterns from a text file
     dq --files --older-than 90d --min-size 1G /var
+    dq --files --newer-than 24h /var  # files modified within the last day
+    dq --files --older-than 7d --newer-than 30d /var
     dq --depth 2 --min-percent 0.5 /
     dq --cross-filesystems /mnt
     dq --errors /var                 # list unreadable paths
-    dq --precise /data               # complete walk, without chart-based stopping
+    dq --precise /data               # scan every file
     dq --json /var | jq .rows
     dq --jsonl --files /var
+
+`--exclude-from FILE` loads the same patterns accepted by `--exclude`, one per line.
+Patterns match a file or directory name, or a path relative to the scanned directory.
+Blank lines and lines starting with `#` are ignored. For example, `exclusions.txt` can
+contain `node_modules` on one line and `*.cache` on another.
+
+Age filters use file modification times. `--older-than 7d --newer-than 30d` selects
+files modified between 7 and 30 days ago.
 
 Examples:
 

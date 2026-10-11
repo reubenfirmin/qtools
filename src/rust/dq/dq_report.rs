@@ -141,10 +141,10 @@ fn select_files<'a>(scan: &'a Scan, query: &DiskQuery) -> (Vec<Selected<'a>>, us
     drop(identities);
     let mut selected = Vec::with_capacity(representatives.len());
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    let filters = query.selection.file_filters();
     for fact in representatives {
         let bytes = bytes(fact, query.accounting);
-        if query.selection.min_size.is_some_and(|minimum| bytes < minimum) { continue; }
-        if query.selection.older_than.is_some_and(|age| now.saturating_sub(fact.modified) < age.as_secs() as i64) { continue; }
+        if !filters.matches(bytes, fact.modified, now) { continue; }
         selected.push(Selected { fact, bytes });
     }
     (selected, duplicates)
@@ -174,7 +174,7 @@ fn directory_levels(scan: &Scan, query: &DiskQuery, files: &[Selected<'_>], dept
         let entry = directories.entry(directory).or_default();
         entry.0 += bytes; entry.1 += files;
     }
-    let directory_metadata = !has_file_filter(query);
+    let directory_metadata = !query.selection.has_file_filters();
     if directory_metadata || query.presentation.include_zeroes {
         for directory in &scan.directories {
             let entry = directories.entry(directory.path.as_os_str()).or_default();
@@ -219,7 +219,7 @@ fn file_rows(files: &[Selected<'_>]) -> Vec<Row> {
 fn owner_rows(scan: &Scan, query: &DiskQuery, files: &[Selected<'_>]) -> Vec<Row> {
     let names = usernames(); let mut groups: HashMap<u32, (u64, u64)> = HashMap::new();
     for file in files { let entry = groups.entry(file.fact.uid).or_default(); entry.0 += file.bytes; entry.1 += 1; }
-    if !has_file_filter(query) {
+    if !query.selection.has_file_filters() {
         for directory in &scan.directories { groups.entry(directory.uid).or_default().0 += directory_bytes(directory, query.accounting); }
     }
     groups.into_iter().map(|(uid, (bytes, files))| Row { label: names.get(&uid).cloned().unwrap_or_else(|| uid.to_string()),
@@ -421,7 +421,6 @@ fn bytes(file: &FileFact, accounting: SizeAccounting) -> u64 { match accounting 
 fn directory_bytes(directory: &DirectoryFact, accounting: SizeAccounting) -> u64 {
     match accounting { SizeAccounting::Allocated => directory.allocated, SizeAccounting::Apparent => 0 }
 }
-fn has_file_filter(query: &DiskQuery) -> bool { query.selection.older_than.is_some() || query.selection.min_size.is_some() }
 pub(super) fn percent(value: u64, total: u64) -> f64 { if total == 0 { 0.0 } else { (value as f64 / total as f64 * 10_000.0).round() / 100.0 } }
 fn view_name(view: DiskView) -> &'static str { match view { DiskView::Summary => "directories", DiskView::Files => "files", DiskView::Owners => "owners", DiskView::Age => "age" } }
 fn accounting_name(mode: SizeAccounting) -> &'static str { match mode { SizeAccounting::Allocated => "allocated", SizeAccounting::Apparent => "apparent" } }
@@ -713,6 +712,9 @@ fn age_bucket(days: i64) -> &'static str {
             vec!["dq", "--apparent", "--all", "--zeroes"], vec!["dq", "--top", "1"],
             vec!["dq", "--min-size", "8K"], vec!["dq", "--apparent", "--min-size", "8K", "--zeroes"],
             vec!["dq", "--older-than", "1d"], vec!["dq", "--min-size", "8K", "--older-than", "1d"],
+            vec!["dq", "--newer-than", "1d"], vec!["dq", "--newer-than", "1d", "--min-size", "4K"],
+            vec!["dq", "--apparent", "--newer-than", "1d"], vec!["dq", "--newer-than", "1d", "--zeroes"],
+            vec!["dq", "--older-than", "1h", "--newer-than", "1d"],
             vec!["dq", "--exclude", "ignored"], vec!["dq", "--exclude", "alpha/*"],
             vec!["dq", "--depth", "0"], vec!["dq", "--depth", "2"], vec!["dq", "--depth", "5"],
         ] {

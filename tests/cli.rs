@@ -63,6 +63,7 @@ fn commands_generate_shell_completions() {
     let dq_script = String::from_utf8_lossy(&dq.stdout);
     assert!(dq_script.contains("complete -c dq"));
     assert!(dq_script.contains("older-than"));
+    assert!(dq_script.contains("newer-than"));
 }
 
 #[test]
@@ -428,6 +429,71 @@ fn dq_json_scan_and_validation_run_end_to_end() {
     assert!(!unknown_help.status.success());
     assert!(String::from_utf8_lossy(&unknown_help.stderr).contains("unknown help topic"));
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dq_age_ranges_and_exclusion_files_filter_every_view() {
+    use std::fs::{File, FileTimes};
+    use std::os::unix::fs::MetadataExt;
+    use std::time::Duration;
+
+    let root = std::env::temp_dir().join(format!("qtools-dq-filters-{}", std::process::id()));
+    fs::create_dir_all(root.join("nested")).unwrap();
+    let now = SystemTime::now();
+    for (name, size, age) in [("old.txt", 128, 10 * 86_400),
+        ("nested/middle.bin", 512, 3 * 86_400), ("recent.txt", 2048, 12 * 3600)] {
+        fs::write(root.join(name), vec![0_u8; size]).unwrap();
+        File::open(root.join(name)).unwrap().set_times(
+            FileTimes::new().set_modified(now - Duration::from_secs(age))).unwrap();
+    }
+    fs::hard_link(root.join("nested/middle.bin"), root.join("middle.link")).unwrap();
+    let root_text = root.to_str().unwrap();
+    for view in [None, Some("--files"), Some("--owners"), Some("--age")] {
+        for accounting in ["--apparent", "--allocated"] {
+            for (filters, name, expected_files) in [
+                (vec!["--newer-than", "2d"], "recent.txt", 1),
+                (vec!["--older-than", "2d", "--newer-than", "7d"], "nested/middle.bin", 1),
+                (vec!["--older-than", "2d", "--newer-than", "7d", "--min-size", "8K"], "", 0),
+            ] {
+                let mut arguments = vec!["--json", "--noprogress", accounting];
+                if let Some(view) = view { arguments.push(view); }
+                arguments.extend(filters);
+                arguments.push(root_text);
+                let value = successful_json("dq", "age-filters", &arguments);
+                let expected_bytes = if expected_files == 0 { 0 } else {
+                    let metadata = fs::metadata(root.join(name)).unwrap();
+                    if accounting == "--apparent" { metadata.len() } else { metadata.blocks() * 512 }
+                };
+                assert_eq!(value["total_bytes"], expected_bytes, "{arguments:?}");
+                assert_eq!(value["metadata"]["selected_files"], expected_files, "{arguments:?}");
+            }
+        }
+    }
+
+    let exclusions = state_dir("exclusion-file").join("exclusions.txt");
+    fs::write(&exclusions, "  # Files to skip\nold.txt\n\n nested/* \n").unwrap();
+    let value = successful_json("dq", "exclude-from", &["--json", "--apparent", "--exclude-from",
+        exclusions.to_str().unwrap(), "--exclude", "middle.link", root_text]);
+    assert_eq!(value["total_bytes"], 2048);
+    assert_eq!(value["metadata"]["selected_files"], 1);
+    assert_eq!(value["metadata"]["excludes"], serde_json::json!(["middle.link", "old.txt", "nested/*"]));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dq_filter_help_explains_exclusion_files_and_modification_ages() {
+    let help = run("dq", "filter-help", &["help", "filters"]);
+    assert!(help.status.success());
+    assert!(help.stderr.is_empty());
+    let text = String::from_utf8_lossy(&help.stdout);
+    assert!(text.contains("Load exclusion patterns from a text file"));
+    assert!(text.contains("dq --exclude-from exclusions.txt ."));
+    assert!(text.contains("lines starting with # are ignored"));
+    assert!(text.contains("--newer-than AGE"));
+    assert!(text.contains("modification times"));
+    let context = run("dq", "newer-help", &["--newer-than", "2d", "--help"]);
+    assert!(context.status.success());
+    assert_eq!(context.stdout, help.stdout);
 }
 
 #[test]

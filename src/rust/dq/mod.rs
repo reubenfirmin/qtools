@@ -16,21 +16,23 @@ dq — query what is using your disk
 
 Usage:
   dq [DIR]                   Directory summary
+  dq --precise [DIR]         Scan every file (may take longer)
   dq --files [DIR]           Largest files
   dq --owners [DIR]          Usage by owner
+  dq --age [DIR]             Usage by modification age
 
 Focused help:
   dq help views              Files, owners, and age
   dq help filters            Exclusions, age, and size selection
-  dq help scan               Accounting and traversal
-  dq help output             Limits, detail, JSON, and errors";
+  dq help scan               Scan speed, --precise, and disk accounting
+  dq help output             Display limits, JSON, and errors";
 
 const HELP_VIEWS: &str = "\
 dq views
 
   dq DIR                     Parent directories with significant subdirectories
   dq --files DIR             Largest files recursively
-  dq --owners DIR            Allocated bytes grouped by owner
+  dq --owners DIR            Usage grouped by owner
   dq --age DIR               Bytes grouped into modification-age buckets
 
 Primary views conflict. Combine a view with filters instead, for example:
@@ -39,63 +41,78 @@ Primary views conflict. Combine a view with filters instead, for example:
 const HELP_FILTERS: &str = "\
 dq filters
 
-  --exclude PATTERN          Exclude a name or root-relative path; repeatable; * and ? supported
-  --exclude-from FILE        Read patterns, one per line (# comments allowed)
-  --older-than AGE           Only files at least this old: 12h, 30d, 6w, 1y
+  --exclude PATTERN          Skip matching files/directories; repeatable; * and ? supported
+  --exclude-from FILE        Load exclusion patterns from a text file
+  --older-than AGE           Only files modified at least AGE ago
+  --newer-than AGE           Only files modified within the last AGE
   --min-size SIZE            Only files at least this large: 10M, 2GiB
 
-Filters apply before every total and aggregation.
+Patterns match a name or a path relative to DIR. An exclusion file contains one pattern
+per line; blank lines and lines starting with # are ignored. For example, exclusions.txt:
+  # Skip dependencies and cache files
+  node_modules
+  *.cache
+  build/*
+
+AGE accepts s, m, h, d, w, or y (for example, 12h, 30d, 6w, 1y).
+Age filters use modification times. Combine --older-than and --newer-than for an age range.
 
 Examples:
   dq --exclude node_modules --exclude '*.cache' .
-  dq --files --older-than 90d --min-size 1G /var";
+  dq --exclude-from exclusions.txt .
+  dq --files --older-than 90d --min-size 1G /var
+  dq --files --newer-than 24h /var
+  dq --files --older-than 7d --newer-than 30d /var";
 
 const HELP_SCAN: &str = "\
-dq accounting and traversal
+dq scanning
 
   --allocated               Count allocated filesystem blocks (default)
   --apparent                Count logical file lengths
   --one-file-system         Stay on the starting filesystem (default)
   --cross-filesystems       Traverse mounted filesystems too
-  --precise                 Walk every directory; disable chart-based early stopping
-  --max-error PERCENT       Unresolved allocation budget (% of capacity; default 3)
-  -t, --threads N           Directory workers (default 50)
+  --precise                 Scan every file (may take longer)
+  --max-error PERCENT       Space left unaccounted for (% of disk capacity; default 3)
+  -t, --threads N           Scan threads (default 50)
   --noprogress              Disable progress
 
+Reading every file can be slow. For a quick overview, dq can stop with a small amount of
+disk space still unaccounted for: at most 3% of the disk's total capacity by default.
+Use --precise when you need complete totals. It checks every file and may take longer.
+
+This shortcut applies to directory summaries of whole supported filesystems.
+Subdirectories, filtered scans, --all, JSON, and other views already get a full scan.
+Lower --max-error to leave less space unaccounted for; --max-error 0 scans everything.
+
 Hard links are counted once by device/inode. Symlinks are not followed.
-Directory summaries accumulate totals during the walk instead of retaining every file record.
-At ext4 filesystem roots, the default chart uses measured usage and filesystem used space to
-bound unseen bytes, prioritize productive directories, and stop when the error budget is met.
-Incomplete sizes are lower bounds; unresolved space stays visible in the outer ring.
---max-error bounds the total unresolved allocation, not the error of each directory. Use
---max-error 0.277 for approximately one degree, or --precise for complete totals.
---precise, JSON, --all, filters, and other views always complete the walk. Subdirectories and
-filesystems without a suitable allocation bound also complete the walk.";
+
+Examples:
+  dq --precise /data
+  dq --max-error 1 /data";
 
 const HELP_OUTPUT: &str = "\
 dq presentation and output
 
-  --top N                   Rows to show (default 15)
-  --depth N                 Directory grouping depth (default 1, with subdirectory rings)
-  --min-percent PERCENT     Hide groups below this share of the scan (default 1)
-  --all                     Show all groups (-v is a compatibility alias)
-  -V, --zeroes              Include empty directory groups
+  --top N                   Limit parent groups, or rows in other views
+  --depth N                 Directory grouping: 0 = total, 1 = tree, 2+ = flat list
+  --min-percent PERCENT     Hide groups smaller than PERCENT of the total
+                            Default: 1 for directories, 0 for other views
+  --all                     Show all top-level groups (-v is an alias)
+  -V, --zeroes              Include empty groups; use with --all
   --errors                  List unreadable paths
-  --json / --jsonl          Pretty or one-line machine-readable output
+  --json                    Pretty-printed JSON report
+  --jsonl                   The JSON report on a single line
   --no-color                Disable color and terminal graphics
 
-The default directory chart reads from the outside in: parents, children, grandchildren.
-Child arcs stay within their parent's angle; swatches match the path list. Small views spread
-directory colors across the whole wheel. Busier views divide the wheel by visible branch
-complexity, giving busy hierarchies more room for contrasting hues.
-Files here and smaller groups use their parent's hue; root files have their own color.
-Gray marks hidden parent groups and filesystem use outside the scan. At a filesystem mount
-point, allocated, single-filesystem accounting adds free space and other filesystem use to
-the outer parent ring, without child arcs beneath them. Subdirectories use the whole pie.
-Chart and path-list percentages refer to filesystem capacity when shown, otherwise the whole
-scan. Free space includes reserved blocks; available space excludes them.
-Run dq on a listed path to dig deeper; the chart has no mouse interaction.
---all keeps the grouping depth; use --depth N for a different grouping.";
+By default, directories show up to 15 parent groups with significant children and
+grandchildren beneath them. Other views show up to 15 rows. --all removes the count
+and percentage limits on top-level groups; an explicit --top still applies.
+
+Examples:
+  dq --top 20 /data
+  dq --all --depth 2 /data
+  dq --json --all /data
+  dq --no-color /data";
 
 static HELP_TOPICS: &[Topic] = &[
     Topic { name: "views", aliases: &["files", "owners", "age"], text: HELP_VIEWS },
@@ -105,7 +122,7 @@ static HELP_TOPICS: &[Topic] = &[
 ];
 static HELP_CONTEXTS: &[(&[&str], &str)] = &[
     (&["--files", "--owners", "--age"], "views"),
-    (&["--exclude", "--exclude-from", "--older-than", "--min-size"], "filters"),
+    (&["--exclude", "--exclude-from", "--older-than", "--newer-than", "--min-size"], "filters"),
     (&["--allocated", "--apparent", "--one-file-system", "--cross-filesystems", "--precise", "--max-error", "--threads", "-t", "--noprogress"], "scan"),
     (&["--top", "--depth", "--min-percent", "--all", "--nosummary", "-v", "--zeroes", "-V", "--errors", "--json", "--jsonl", "--no-color"], "output"),
 ];

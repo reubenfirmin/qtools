@@ -18,8 +18,12 @@ pub(crate) struct Args {
     #[arg(long, conflicts_with = "apparent")] pub(super) allocated: bool,
     #[arg(long, conflicts_with = "allocated")] pub(super) apparent: bool,
     #[arg(long, value_name = "PATTERN", action = clap::ArgAction::Append)] pub(super) exclude: Vec<String>,
+    /// Load exclusion patterns from a text file, one per line
     #[arg(long, value_name = "FILE", value_hint = ValueHint::FilePath)] pub(super) exclude_from: Option<String>,
+    /// Select files modified at least AGE ago
     #[arg(long, value_name = "AGE", value_parser = parse_duration)] pub(super) older_than: Option<Duration>,
+    /// Select files modified within the last AGE
+    #[arg(long, value_name = "AGE", value_parser = parse_duration)] pub(super) newer_than: Option<Duration>,
     #[arg(long, value_name = "SIZE", value_parser = parse_bytes)] pub(super) min_size: Option<u64>,
     #[arg(long)] pub(super) top: Option<usize>,
     #[arg(long)] pub(super) depth: Option<usize>,
@@ -33,7 +37,7 @@ pub(crate) struct Args {
     #[arg(long)] pub(super) no_color: bool,
     #[arg(long)] pub(super) cross_filesystems: bool,
     #[arg(long, conflicts_with = "cross_filesystems")] pub(super) one_file_system: bool,
-    /// Walk every directory; disable early stopping
+    /// Scan every file (may take longer)
     #[arg(long)] pub(super) precise: bool,
     /// Maximum unresolved filesystem allocation as a percentage of capacity
     #[arg(long = "max-error", default_value_t = 3.0)] pub(super) max_error_percent: f64,
@@ -88,7 +92,7 @@ impl DiskQuery {
         }
         Ok(Self {
             root: args.dir.clone(),
-            selection: DiskSelection { excludes, older_than: args.older_than, min_size: args.min_size },
+            selection: DiskSelection { excludes, older_than: args.older_than, newer_than: args.newer_than, min_size: args.min_size },
             traversal: TraversalOptions { threads: args.threads.max(1) as usize, show_progress: !args.noprogress,
                 one_file_system: !args.cross_filesystems, precise: args.precise, max_error_percent: args.max_error_percent },
             presentation: PresentationOptions { top: args.top.unwrap_or(if args.nosummary || args.all { usize::MAX } else { 15 }),

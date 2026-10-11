@@ -30,7 +30,7 @@ impl Bound {
         if query.traversal.precise || query.traversal.max_error_percent == 0.0 || query.output.machine() || !query.traversal.one_file_system
             || query.accounting != SizeAccounting::Allocated || query.presentation.depth != 1
             || query.presentation.all || query.presentation.include_zeroes || query.presentation.min_percent == 0.0
-            || query.selection.min_size.is_some() || query.selection.older_than.is_some()
+            || query.selection.has_file_filters()
             || !query.selection.excludes.is_empty() { return None; }
         let space = Space::allocation_bound(root)?;
         let mut bound = Self::new(space.used_bytes, space.capacity_bytes);

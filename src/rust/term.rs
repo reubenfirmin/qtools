@@ -90,10 +90,41 @@ pub fn set_noecho(mode: &TtyMode) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::io::FromRawFd;
+    use std::process::{Command, Stdio};
 
     #[test]
-    fn noninteractive_environment_has_no_stdout_geometry() {
-        assert_eq!(stdout_width(), None);
+    fn stdout_geometry_matches_redirected_and_terminal_output() {
+        const EXPECTED_WIDTH: &str = "QTOOLS_TEST_STDOUT_WIDTH";
+        if let Ok(expected) = std::env::var(EXPECTED_WIDTH) {
+            assert_eq!(stdout_width(), expected.parse::<usize>().ok());
+            return;
+        }
+
+        // Use child processes so each case gets its own stdout without changing the test runner's.
+        let check = |output: Stdio, expected: &str| {
+            let result = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "term::tests::stdout_geometry_matches_redirected_and_terminal_output"])
+                .env(EXPECTED_WIDTH, expected)
+                .stdout(output)
+                .output()
+                .unwrap();
+            assert!(result.status.success(), "stdout width {expected}: {}{}",
+                String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+        };
+
+        check(Stdio::piped(), "none");
+        for width in [126, 0] {
+            let mut master = -1;
+            let mut slave = -1;
+            let size = libc::winsize { ws_row: 24, ws_col: width, ws_xpixel: 0, ws_ypixel: 0 };
+            assert_eq!(unsafe {
+                libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), &size)
+            }, 0, "{}", std::io::Error::last_os_error());
+            let _master = unsafe { File::from_raw_fd(master) };
+            let slave = unsafe { File::from_raw_fd(slave) };
+            check(slave.into(), if width == 0 { "none" } else { "126" });
+        }
     }
 
     #[test]

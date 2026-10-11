@@ -242,8 +242,13 @@ try:
             status=result
             break
     if status is None:
-        done,result=os.waitpid(pid,os.WNOHANG)
-        if done: status=result
+        # The PTY can reach EOF just before the process becomes waitable.
+        while time.monotonic()<deadline:
+            done,result=os.waitpid(pid,os.WNOHANG)
+            if done:
+                status=result
+                break
+            time.sleep(0.01)
     if status is None:
         os.kill(pid,signal.SIGKILL)
         os.waitpid(pid,0)

@@ -82,7 +82,7 @@ def publish(version):
         raise ValueError("release from main")
     if run("git", "status", "--porcelain", capture=True).strip():
         raise ValueError("commit your changes before releasing; the working tree must be clean")
-    git_remote("fetch", REMOTE, "main")
+    git_remote("fetch", "--no-prune", REMOTE, "refs/heads/main")
     run("git", "merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD")
     tag = f"v{version}"
     if run("git", "tag", "--list", tag, capture=True).strip() or git_remote(
@@ -106,7 +106,7 @@ def publish(version):
     run("git", "tag", "-a", tag, "-m", f"qtools {version}")
     print(f"If interrupted after pushing, continue with: ./release.py --resume {tag}", flush=True)
     git_remote("push", "--atomic", REMOTE, "HEAD:refs/heads/main", f"refs/tags/{tag}")
-    git_remote("fetch", REMOTE, "main:refs/remotes/origin/main")
+    git_remote("fetch", "--no-prune", REMOTE, "refs/heads/main:refs/remotes/origin/main")
     return commit
 
 
@@ -214,7 +214,7 @@ def main():
     if args.resume:
         version = args.resume.removeprefix("v")
         version_tuple(version)
-        git_remote("fetch", REMOTE, f"refs/tags/v{version}")
+        git_remote("fetch", "--no-prune", REMOTE, f"refs/tags/v{version}")
         commit = run("git", "rev-parse", "FETCH_HEAD^{commit}", capture=True).strip()
     else:
         current = manifest_version((ROOT / "Cargo.toml").read_text())

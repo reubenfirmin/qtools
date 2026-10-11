@@ -1,6 +1,8 @@
 """Check release versions and reject broken or incomplete published downloads."""
 
 import hashlib
+import contextlib
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -93,8 +95,43 @@ class ReleaseTests(unittest.TestCase):
     def test_failed_workflow_stops_before_release_verification(self):
         failed = [{"databaseId": 123, "status": "completed", "conclusion": "failure", "url": "run-url"}]
         with patch.object(release, "run", side_effect=[json.dumps(failed), ""]), \
+                contextlib.redirect_stdout(io.StringIO()), \
                 self.assertRaisesRegex(ValueError, "ci.yml failed"):
             release.wait_workflow("ci.yml", "main", "commit")
+
+    def test_publish_with_git_pruning_preserves_tags_and_updates_tracking_ref(self):
+        with tempfile.TemporaryDirectory() as temporary, contextlib.redirect_stdout(io.StringIO()):
+            root, remote = Path(temporary) / "checkout", Path(temporary) / "remote.git"
+            for location, extra in ((root, []), (remote, ["--bare"])):
+                subprocess.run(["git", "init", "--initial-branch=main", *extra, str(location)],
+                               check=True, capture_output=True)
+            with patch.object(release, "ROOT", root), patch.object(release, "REMOTE", str(remote)):
+                command = release.run
+                for key, value in (("user.name", "Release test"), ("user.email", "test@example.invalid"),
+                                   ("fetch.prune", "true"), ("fetch.pruneTags", "true")):
+                    command("git", "config", "--local", key, value)
+                (root / "Cargo.toml").write_text('[package]\nname = "qtools"\nversion = "0.4.3"\n')
+                (root / "Cargo.lock").write_text('version = 4\n[[package]]\nname = "qtools"\nversion = "0.4.3"\n')
+                command("git", "add", "--", "Cargo.toml", "Cargo.lock")
+                command("git", "commit", "-m", "Initial", capture=True)
+                command("git", "remote", "add", "origin", remote)
+                release.git_remote("push", remote, "HEAD:refs/heads/main")
+                command("git", "tag", "local-only")
+
+                def checked_command(*args, **kwargs):
+                    if args[0] in ("cargo", release.sys.executable):
+                        return ""
+                    return command(*args, **kwargs)
+
+                with patch.object(release, "run", side_effect=checked_command):
+                    commit = release.publish("0.4.4")
+                self.assertEqual(command("git", "rev-parse", "refs/remotes/origin/main", capture=True).strip(), commit)
+                self.assertEqual(command("git", "rev-parse", "v0.4.4^{commit}", capture=True).strip(), commit)
+                self.assertTrue(command("git", "tag", "--list", "local-only", capture=True).strip())
+                self.assertFalse(command("git", "status", "--porcelain", capture=True).strip())
+                remote_commit = subprocess.check_output(
+                    ["git", "--git-dir", str(remote), "rev-parse", "main"], text=True).strip()
+                self.assertEqual(remote_commit, commit)
 
 
 if __name__ == "__main__":

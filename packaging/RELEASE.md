@@ -16,17 +16,34 @@ there is no persistent release-signing key to store or rotate.
 
 ## Release
 
-1. Update the version in `Cargo.toml` and update `Cargo.lock` with `cargo check`.
-2. Update release notes and commit the release.
-3. Run `cargo test --locked --all-targets` and `./build.sh` locally.
-4. Tag exactly the Cargo version and push:
+Commit the changes to release on `main`, then run:
 
 ```sh
-version=0.2.0
-git tag -a "v$version" -m "qtools $version"
-git push origin main
-git push origin "v$version"
+./release.py
 ```
+
+Requires Python 3.9+, Cargo, Git, and an authenticated GitHub CLI (`gh`) with push access.
+The script increments the patch version in `Cargo.toml` and `Cargo.lock`, runs the release-script
+tests, Rust tests, Clippy, and a release build, then commits and tags the version. It pushes `main`
+and the tag atomically over HTTPS using `gh` credentials, waits for CI and the release workflow,
+and verifies both published download channels, all four checksums, and both build attestations.
+It refuses a dirty checkout, a branch other than `main`, or a history that omits remote `main`.
+
+To choose a version or supply release notes:
+
+```sh
+./release.py 0.5.0 --notes-file /path/to/notes.txt
+```
+
+Without a notes file, GitHub generates the release notes. If interrupted after pushing, continue
+without creating another release:
+
+```sh
+./release.py --resume v0.4.4
+```
+
+Failures leave local edits, commits, and tags available for inspection. If a workflow fails,
+fix or rerun it before resuming verification.
 
 The tag workflow validates the version, tests, builds x86-64 and ARM64 AppImages, embeds the stable
 zsync update URLs, creates keyless GitHub build-provenance attestations, creates the GitHub Release,

@@ -42,6 +42,7 @@ pub struct IoOpts {
     pub compact_json: bool,
     pub sample_interval_ms: u64,
     pub colors: bool,
+    pub width: Option<usize>,
 }
 
 pub fn render<W: Write>(out: &mut W, clusters: &[IoCluster], opts: &IoOpts, context: RenderContext) -> io::Result<()> {
@@ -155,10 +156,7 @@ fn write_rows<W: Write>(out: &mut W, clusters: &[IoCluster], opts: &IoOpts, swat
 }
 
 pub fn write_graphics<W: Write>(out: &mut W, clusters: &[IoCluster], opts: &IoOpts) -> io::Result<()> {
-    write_graphics_with(out, clusters, opts, |image, config| match viuer::print(image, config) {
-        Ok(_) => true,
-        Err(error) => { graphics::debug_print_failure(&error); false }
-    })
+    write_graphics_with(out, clusters, opts, graphics::draw)
 }
 
 fn write_graphics_with<W: Write>(out: &mut W, clusters: &[IoCluster], opts: &IoOpts,
@@ -177,8 +175,7 @@ fn write_graphics_with<W: Write>(out: &mut W, clusters: &[IoCluster], opts: &IoO
     let reads = chart::identity_segments(&read_items, read_total, opts.top);
     let writes = chart::identity_segments(&write_items, write_total, opts.top);
     let image = donut::build_two_ring_image(&chart::slices(&reads), &chart::slices(&writes), chart::DONUT_PX);
-    let cols = 40u32;
-    let config = viuer::Config { absolute_offset: false, width: Some(cols), height: Some(cols / 2), ..Default::default() };
+    let config = graphics::config(opts.width, 40);
     out.flush()?;
     if !draw(&image, &config) {
         return write_rows(out, clusters, opts, false);
@@ -242,7 +239,7 @@ mod tests {
         let clusters = vec![IoCluster { identity: "db".into(), read_bps: 10, write_bps: 20,
             read_total: 100, write_total: 200, members: vec![] }];
         let opts = IoOpts { metric: IoMetric::Combined, top: 15, verbose: false,
-            compact_json: true, sample_interval_ms: 400, colors: false };
+            compact_json: true, sample_interval_ms: 400, colors: false, width: None };
         let mut out = Vec::new();
         write_json(&mut out, &clusters, &opts).unwrap();
         let text = String::from_utf8(out).unwrap();
@@ -259,7 +256,7 @@ mod tests {
             IoCluster { identity: "quiet".into(), read_bps: 25, write_bps: 25, read_total: 0, write_total: 0, members: vec![] },
         ];
         let opts = IoOpts { metric: IoMetric::Combined, top: 15, verbose: false,
-            compact_json: false, sample_interval_ms: 400, colors: false };
+            compact_json: false, sample_interval_ms: 400, colors: false, width: None };
         let mut out = Vec::new();
         write_text(&mut out, &clusters, &opts).unwrap();
         let text = String::from_utf8(out).unwrap();
@@ -273,7 +270,7 @@ mod tests {
         let clusters = vec![IoCluster { identity: "zero".into(), read_bps: 0, write_bps: 0,
             read_total: 0, write_total: 0, members: vec![member] }];
         let opts = IoOpts { metric: IoMetric::Read, top: 15, verbose: true,
-            compact_json: false, sample_interval_ms: 0, colors: false };
+            compact_json: false, sample_interval_ms: 0, colors: false, width: None };
         let mut output = Vec::new();
         write_rows(&mut output, &clusters, &opts, true).unwrap();
         let text = String::from_utf8(output).unwrap();
@@ -289,11 +286,13 @@ mod tests {
 
         let active = vec![IoCluster { identity: "active".into(), read_bps: 10, write_bps: 20,
             read_total: 100, write_total: 200, members: vec![] }];
+        let opts = IoOpts { width: Some(9), ..opts };
         for succeeds in [true, false] {
             let mut output = Vec::new();
             write_graphics_with(&mut output, &active, &opts, |image, config| {
                 assert!(image.width() > 0);
-                assert_eq!(config.width, Some(40));
+                assert_eq!(config.width, Some(9));
+                assert_eq!(config.height, Some(5));
                 succeeds
             }).unwrap();
             let text = String::from_utf8(output).unwrap();

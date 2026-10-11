@@ -97,6 +97,9 @@ struct Loaded { hints: Vec<(PathBuf, u64)>, candidates: Candidates, small: Small
 
 pub(super) struct Candidates { reader: BufReader<fs::File>, remaining: usize, files: usize }
 impl Candidates {
+    #[cfg(test)]
+    pub fn monitor_reads(&self) -> std::io::Result<fs::File> { self.reader.get_ref().try_clone() }
+
     pub fn next(&mut self) -> Option<FileHints> {
         if self.remaining == 0 { return None; }
         self.remaining -= 1;
@@ -125,7 +128,7 @@ impl Cache {
         if std::env::var_os("QTOOLS_NO_CACHE").is_some() { return None; }
         let canonical = fs::canonicalize(root).ok()?;
         let metadata = fs::metadata(&canonical).ok()?;
-        let key = Key { version: VERSION, root: root.to_path_buf(), canonical, device: metadata.dev(), inode: metadata.ino() };
+        let key = Key { version: VERSION, root: canonical.clone(), canonical, device: metadata.dev(), inode: metadata.ino() };
         let uid = unsafe { libc::geteuid() };
         let directory = std::env::temp_dir().join(format!("qtools-dq-cache-{uid}"));
         let _ = fs::DirBuilder::new().mode(0o700).create(&directory);
@@ -247,6 +250,10 @@ mod tests {
             file_hints: vec![FileHints { directory: PathBuf::from("data/large"), names: b"big\0\x04\x00".to_vec(), prior_bytes: 1_000_000 },
                 FileHints { directory: PathBuf::from("data/large"), names: b"tiny\0\x05\x00".to_vec(), prior_bytes: 4096 }], small_files: small };
         cache.save(&scan);
+        let alias = Cache::open(&root.join(".")).unwrap();
+        assert_eq!(alias.file, file, "equivalent root paths must share the learned index");
+        assert_eq!(alias.hints, scan.hints);
+        assert!(alias.candidates.is_some());
         let mut loaded = Cache::open(&root).unwrap();
         assert_eq!(loaded.hints, scan.hints);
         assert!(loaded.small.contains(100_000)); assert!(!loaded.small.contains(42));

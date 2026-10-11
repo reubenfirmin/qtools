@@ -335,10 +335,7 @@ fn build_cpu_rings(core_loads: &[f64], attribution: &[Vec<(i32, f64)>], clusters
 #[allow(clippy::too_many_arguments)]
 pub fn write_graphics<W: Write>(out: &mut W, clusters: &[Cluster], mem_used: u64, mem_total: u64, swap_used: u64, swap_total: u64, cpu_total: f64, core_loads: &[f64], attribution: &[Vec<(i32, f64)>], opts: &ReportOpts) -> io::Result<()> {
     write_graphics_with(out, clusters, mem_used, mem_total, swap_used, swap_total, cpu_total,
-        core_loads, attribution, opts, |image, config| match viuer::print(image, config) {
-            Ok(_) => true,
-            Err(error) => { graphics::debug_print_failure(&error); false }
-        })
+        core_loads, attribution, opts, graphics::draw)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -350,13 +347,7 @@ fn write_graphics_with<W: Write>(out: &mut W, clusters: &[Cluster], mem_used: u6
     write_header(out, mem_used, mem_total, swap_used, swap_total, cpu_total, colors)?;
 
     let top = top_clusters(clusters, opts.top);
-    let cols = opts.width.unwrap_or(80).clamp(16, 40) as u32;
-    let config = viuer::Config {
-        absolute_offset: false,
-        width: Some(cols),
-        height: Some((cols / 2).max(8)),
-        ..Default::default()
-    };
+    let config = graphics::config(opts.width, 40);
 
     // One ring per CPU core for the cpu metric (as long as we actually have per-core samples; on a
     // platform quirk where we don't, fall through to the single three-part ring below instead).

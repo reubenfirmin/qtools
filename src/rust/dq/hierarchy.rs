@@ -12,6 +12,10 @@ use super::dq_report::Row;
 pub(super) type Totals = HashMap<PathBuf, (u64, u64)>;
 pub(super) const MAX_CHILDREN: usize = 3;
 pub(super) const MIN_PARENT_SHARE: f64 = 0.10;
+// Small views can give every directory its own hue, separated by at least 45 degrees.
+const DISTINCT_DIRECTORY_LIMIT: usize = 8;
+// Anchor the largest directory in blue, even when hierarchy widths change.
+const LEADING_HUE: f64 = 215.0;
 
 pub(super) fn directory_prefix(relative: &Path, depth: usize) -> &OsStr {
     if depth == 0 { return OsStr::new(""); }
@@ -135,14 +139,39 @@ fn color_spaces(nodes: &[Node]) -> Vec<(usize, ColorSpace)> {
     // Complex trees reserve room for more colors.
     let order: Vec<_> = (0..nodes.len()).step_by(2).chain((1..nodes.len()).step_by(2)).collect();
     let weights: Vec<_> = order.iter().map(|rank| color_weight(&nodes[*rank])).collect();
-    order.into_iter().zip(ColorSpace { start: 0.0, width: 360.0 }.divide(&weights)).collect()
+    let mut spaces = ColorSpace { start: 0.0, width: 360.0 }.divide(&weights);
+    if let Some(first) = spaces.first() {
+        let rotation = LEADING_HUE - first.hue();
+        for space in &mut spaces { space.start += rotation; }
+    }
+    order.into_iter().zip(spaces).collect()
 }
 
 fn color_tree(nodes: &mut [Node]) {
+    let count = directory_count(nodes);
+    if count <= DISTINCT_DIRECTORY_LIMIT {
+        let mut hues = (0..count).step_by(2).chain((1..count).step_by(2))
+            .map(|rank| LEADING_HUE + rank as f64 * 360.0 / count as f64);
+        color_distinct(nodes, &mut hues, 0);
+        return;
+    }
     for (rank, space) in color_spaces(nodes) {
         let node = &mut nodes[rank];
         node.color = from_hsl(space.hue(), 0.70, 0.52);
         color_children(node, space, 1);
+    }
+}
+
+fn directory_count(nodes: &[Node]) -> usize {
+    nodes.iter().map(|node| 1 + directory_count(&node.children)).sum()
+}
+
+fn color_distinct(nodes: &mut [Node], hues: &mut impl Iterator<Item = f64>, level: usize) {
+    for node in nodes {
+        node.color = from_hsl(hues.next().expect("one hue per visible directory"), 0.70,
+            [0.52, 0.64, 0.46][level.min(2)]);
+        if let Some(remainder) = &mut node.remainder { remainder.color = remainder_color(node.color); }
+        color_distinct(&mut node.children, hues, level + 1);
     }
 }
 
@@ -245,13 +274,35 @@ mod tests {
     }
 
     #[test]
-    fn one_busy_parent_can_use_triadic_child_colors() {
+    fn small_deep_trees_spread_hues_across_directories() {
+        for mut nodes in [
+            vec![node(vec![node(vec![node(Vec::new()), node(Vec::new())])])],
+            vec![node(vec![node(Vec::new())]), node(vec![node(Vec::new())])],
+        ] {
+            color_tree(&mut nodes);
+            fn collect(node: &Node, colors: &mut Vec<chart::Color>) {
+                colors.push(node.color);
+                for child in &node.children { collect(child, colors); }
+            }
+            let mut colors = Vec::new();
+            for node in &nodes { collect(node, &mut colors); }
+            for (rank, color) in colors.iter().enumerate() {
+                for previous in &colors[..rank] {
+                    assert!(hue_distance(*color, *previous) >= 89.0,
+                        "a small view should spread directory hues across the whole wheel");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn small_single_parent_views_use_contrasting_child_colors() {
         let mut nodes = vec![node((0..3).map(|_| node(Vec::new())).collect())];
         color_tree(&mut nodes);
         let children = &nodes[0].children;
         for (rank, child) in children.iter().enumerate() {
             for sibling in &children[..rank] {
-                assert!(hue_distance(child.color, sibling.color) >= 119.0,
+                assert!(hue_distance(child.color, sibling.color) >= 89.0,
                     "a single hierarchy should use the whole color wheel");
             }
             assert!((to_hsl(child.color).2 - to_hsl(nodes[0].color).2).abs() >= 0.10);
@@ -274,7 +325,7 @@ mod tests {
         }
         assert!(hue_distance(nodes[0].color, nodes[3].color) >= 74.0);
         assert!(hue_distance(nodes[0].children[0].color, nodes[0].children[2].color) >= 119.0,
-            "a busy green parent must allow contrasting child hues");
+            "a busy parent must allow contrasting child hues");
         for (rank, space) in spaces {
             let parent = &nodes[rank];
             for descendant in parent.children.iter().flat_map(|child| std::iter::once(child).chain(&child.children)) {

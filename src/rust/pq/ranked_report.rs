@@ -142,10 +142,7 @@ impl Report {
     }
 
     fn write_graphics<W: Write>(&self, out: &mut W, options: &Options, context: RenderContext) -> io::Result<()> {
-        self.write_graphics_with(out, options, context, |image, config| match viuer::print(image, config) {
-            Ok(_) => true,
-            Err(error) => { graphics::debug_print_failure(&error); false }
-        })
+        self.write_graphics_with(out, options, context, graphics::draw)
     }
 
     fn write_graphics_with<W: Write>(&self, out: &mut W, options: &Options, context: RenderContext,
@@ -160,7 +157,7 @@ impl Report {
             let image = donut::build_core_rings_image(
                 &rings.iter().map(|(_, slices)| slices.clone()).collect::<Vec<_>>(), chart::DONUT_PX);
             out.flush()?;
-            let config = viuer::Config { absolute_offset: false, width: Some(40), height: Some(20), ..Default::default() };
+            let config = graphics::config(context.width, 40);
             if !draw(&image, &config) {
                 return self.write_rows(out, options, context, false, true);
             }
@@ -174,7 +171,7 @@ impl Report {
         let segments = chart::identity_segments(&items, total, options.top);
         let image = donut::build_donut_image(&chart::slices(&segments), chart::DONUT_PX);
         out.flush()?;
-        let config = viuer::Config { absolute_offset: false, width: Some(40), height: Some(20), ..Default::default() };
+        let config = graphics::config(context.width, 40);
         if !draw(&image, &config) {
             return self.write_rows(out, options, context, false, true);
         }

@@ -15,6 +15,8 @@ pub(super) struct Node {
     pub bytes: u64,
     pub files: u64,
     pub visited: u64,
+    pub yield_bytes: u64,
+    pub yield_cost: u64,
     pub inode: u64,
     pub has_large_files: bool,
     pub largest_direct_hint: u64,
@@ -43,7 +45,7 @@ pub(super) struct DirectoryTree {
 
 impl DirectoryTree {
     pub fn new(report_depth: usize) -> Self {
-        Self { nodes: vec![Node { parent: NONE, depth: 0, bytes: 0, files: 0, visited: 0, inode: 0, has_large_files: false, largest_direct_hint: 0, hint_cost: 0, completed: false,
+        Self { nodes: vec![Node { parent: NONE, depth: 0, bytes: 0, files: 0, visited: 0, yield_bytes: 0, yield_cost: 0, inode: 0, has_large_files: false, largest_direct_hint: 0, hint_cost: 0, completed: false,
             listed: false, scheduled: true, metadata_counted: false, pending_batches: 0, path: Some(PathBuf::new()), direct: (0, 0), direct_present: false, present: false,
             branch: 0, first_child: NONE, next_sibling: NONE, closed: false }],
             report_nodes: vec![0], report_depth, seeds: HashMap::new() }
@@ -68,7 +70,7 @@ impl DirectoryTree {
         let id = self.nodes.len();
         let depth = self.nodes[parent].depth + 1;
         let displayed = depth <= self.report_depth;
-        self.nodes.push(Node { parent, depth, bytes: 0, files: 0, visited: 0, inode: 0, has_large_files: false, largest_direct_hint: 0, hint_cost: 0, completed: false,
+        self.nodes.push(Node { parent, depth, bytes: 0, files: 0, visited: 0, yield_bytes: 0, yield_cost: 0, inode: 0, has_large_files: false, largest_direct_hint: 0, hint_cost: 0, completed: false,
             listed: false, scheduled: false, metadata_counted: false, pending_batches: 0, path: displayed.then(|| relative.to_path_buf()), direct: (0, 0), direct_present: false, present: false,
             branch: if displayed { id } else { self.nodes[parent].branch },
             first_child: NONE, next_sibling: self.nodes[parent].first_child, closed: false });
@@ -122,7 +124,14 @@ impl DirectoryTree {
         }
     }
 
-    pub fn branch(&self, id: NodeId) -> NodeId { self.nodes[id].branch }
+    pub fn observe_yield(&mut self, mut id: NodeId, bytes: u64, cost: u64) {
+        while id != NONE {
+            let node = &mut self.nodes[id];
+            node.yield_bytes += bytes;
+            node.yield_cost += cost;
+            id = node.parent;
+        }
+    }
 
     pub fn finish_deep_totals(&mut self) {
         for node in &mut self.nodes { node.largest_direct_hint /= node.hint_cost.max(1); }

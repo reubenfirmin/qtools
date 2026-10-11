@@ -59,7 +59,7 @@ dq accounting and traversal
   --cross-filesystems       Traverse mounted filesystems too
   --precise                 Walk every directory; disable chart-based early stopping
   --max-error PERCENT       Unresolved allocation budget (% of capacity; default 3)
-  -t, --threads N           Directory workers (default: CPU parallelism, up to 16)
+  -t, --threads N           Directory workers (default 50)
   --noprogress              Disable progress
 
 Hard links are counted once by device/inode. Symlinks are not followed.
@@ -85,8 +85,9 @@ dq presentation and output
   --no-color                Disable color and terminal graphics
 
 The default directory chart reads from the outside in: parents, children, grandchildren.
-Child arcs stay within their parent's angle; swatches match the path list. The color wheel is
-divided by visible branch complexity, giving busy hierarchies more room for contrasting hues.
+Child arcs stay within their parent's angle; swatches match the path list. Small views spread
+directory colors across the whole wheel. Busier views divide the wheel by visible branch
+complexity, giving busy hierarchies more room for contrasting hues.
 Files here and smaller groups use their parent's hue; root files have their own color.
 Gray marks hidden parent groups and filesystem use outside the scan. At a filesystem mount
 point, allocated, single-filesystem accounting adds free space and other filesystem use to

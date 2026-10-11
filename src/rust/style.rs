@@ -28,6 +28,24 @@ pub fn human_plain(size: u64) -> String {
     }
 }
 
+/// Compact byte total for chart centers, with explicit units and at most one decimal.
+pub fn human_bytes(size: u64) -> String {
+    const UNITS: [&str; 7] = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
+    let (mut value, mut unit) = (size as f64, 0);
+    while value >= 1000.0 && unit + 1 < UNITS.len() {
+        value /= 1000.0;
+        unit += 1;
+    }
+    let precision = if unit > 0 && value < 100.0 { 10.0 } else { 1.0 };
+    value = (value * precision).round() / precision;
+    if value >= 1000.0 && unit + 1 < UNITS.len() {
+        value /= 1000.0;
+        unit += 1;
+    }
+    if value.fract() == 0.0 { format!("{value:.0}{}", UNITS[unit]) }
+    else { format!("{value:.1}{}", UNITS[unit]) }
+}
+
 fn round2(size: u64, divisor: u64) -> f64 {
     ((size as f64 / divisor as f64) * 100.0).round() / 100.0
 }
@@ -139,6 +157,20 @@ mod tests {
         assert_eq!(human_plain(1_234_567_890), "1.23G");
         assert_eq!(human_plain(33_612_490_000_000), "33.61T");
         assert_eq!(human_plain(2_500_000_000_000_000), "2.5P");
+    }
+
+    #[test]
+    fn chart_totals_are_compact_and_round_across_unit_boundaries() {
+        for (bytes, expected) in [
+            (0, "0B"), (999, "999B"), (1_200, "1.2KB"),
+            (245_000_000, "245MB"), (1_200_000_000, "1.2GB"),
+            (24_400_000_000_000, "24.4TB"), (999_500_000, "1GB"),
+            (u64::MAX, "18.4EB"),
+        ] {
+            let label = human_bytes(bytes);
+            assert_eq!(label, expected);
+            assert!(label.len() <= 7);
+        }
     }
 
     #[test]

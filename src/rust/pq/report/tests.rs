@@ -267,7 +267,8 @@ use crate::pq::cluster::Member;
         write_graphics_with(&mut cpu, &clusters, 500, 1000, 0, 0, 40.0, &[40.0],
             &[vec![(7, 40.0)]], &options, |image, config| {
                 assert!(image.width() > 0);
-                assert!(config.width.is_some());
+                assert_eq!(config.width, Some(32));
+                assert_eq!(config.height, Some(16));
                 true
             }).unwrap();
         assert!(String::from_utf8(cpu).unwrap().contains("alpha"));

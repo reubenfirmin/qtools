@@ -43,7 +43,9 @@ pub(crate) struct Args {
 }
 
 fn default_threads() -> i32 {
-    std::thread::available_parallelism().map_or(1, |threads| threads.get().min(16)) as i32
+    // Metadata reads wait on filesystem I/O. Keep the original concurrency
+    // rather than limiting outstanding reads to the available CPU count.
+    50
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

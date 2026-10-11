@@ -251,18 +251,6 @@ impl Report {
             self.metadata.view, dim("|", context.colors), self.metadata.accounting, dim("|", context.colors), human_plain(self.total_bytes),
             if self.metadata.pruned_directories > 0 { "measured" } else { "total" })?;
         writeln!(out, "{}", self.metadata.root)?;
-        if self.metadata.pruned_directories > 0 {
-            writeln!(out, "{}", dim(&format!("Measured sizes are lower bounds; skipped {} pending branches. Use --precise for complete totals.",
-                self.metadata.pruned_directories), context.colors))?;
-            if let Some(remaining) = self.metadata.unmeasured_bytes_upper_bound {
-                writeln!(out, "{}", dim(&format!("Unmeasured allocation is at most {} across the filesystem at scan time.",
-                    human_plain(remaining)), context.colors))?;
-            }
-            if self.metadata.known_unassigned_bytes > 0 {
-                writeln!(out, "{}", dim(&format!("{} of measured hard-linked allocation has unsettled directory attribution (gray arc).",
-                    human_plain(self.metadata.known_unassigned_bytes)), context.colors))?;
-            }
-        }
         writeln!(out, "{}", dim("----------------------------------------------------------------", context.colors))
     }
     fn write_text<W: Write>(&self, out: &mut W, context: RenderContext) -> io::Result<()> { self.write_header(out, context)?; self.write_rows(out, context) }
@@ -284,7 +272,7 @@ impl Report {
             writeln!(out, "{}{:>10}  {:>6.2}%  {:>8}  {}  {}", swatch, human_plain(row.bytes), row.percent, row.files, dim(&bar, context.colors), label)?;
         }
         if self.hidden_rows > 0 {
-            writeln!(out, "{}", dim(&format!("{} across {} hidden row(s) ({:.2}% of total); use --all or adjust --top/--min-percent",
+            writeln!(out, "{}", dim(&format!("{} across {} hidden row(s) ({:.2}% of total)",
                 human_plain(self.hidden_bytes), self.hidden_rows, percent(self.hidden_bytes, self.total_bytes)), context.colors))?;
         }
         Ok(())
@@ -301,19 +289,9 @@ impl Report {
             write_directory_row(out, context, remainder.bytes, self.directory_percent(remainder.bytes), remainder.color,
                 &format!("[{} hidden directory groups]", self.hidden_rows), 0, bars)?;
         }
-        let percentages = if self.filesystem_space.is_some() {
-            "Child rows break down their parent; percentages are of filesystem capacity."
-        } else { "Child rows break down their parent; percentages are of the whole scan." };
-        writeln!(out, "{}", dim(percentages, context.colors))?;
-        if tree.nodes.iter().any(|node| !node.children.is_empty()) {
-            writeln!(out, "{}", dim("Hue ranges follow the hierarchy, including files here and smaller subdirs.", context.colors))?;
-        }
-        if self.hidden_rows > 0 {
-            writeln!(out, "{}", dim("Use --all or adjust --top/--min-percent to show hidden parent groups.", context.colors))?;
-        }
         if let Some(space) = &self.filesystem_space {
-            writeln!(out, "{}", dim(&format!("Filesystem: {} capacity, {} available.",
-                human_plain(space.capacity_bytes), human_plain(space.available_bytes)), context.colors))?;
+            writeln!(out, "Filesystem: {} capacity, {} available.",
+                human_plain(space.capacity_bytes), human_plain(space.available_bytes))?;
             write_directory_row(out, context, space.free_bytes, percent(space.free_bytes, space.capacity_bytes),
                 space::FREE_COLOR, "[free space, including reserved blocks]", 0, bars)?;
             if space.used_bytes > self.total_bytes {
@@ -322,8 +300,6 @@ impl Report {
                     space::USED_COLOR, if self.metadata.pruned_directories > 0 {
                         "[unmeasured + other filesystem use]"
                     } else { "[other filesystem use outside scan]" }, 0, bars)?;
-            } else if self.total_bytes > space.used_bytes {
-                writeln!(out, "{}", dim("Directory arcs are scaled to measured filesystem use (shared blocks or scan changes).", context.colors))?;
             }
         }
         if let Some(path) = tree.next_path() {
@@ -332,10 +308,7 @@ impl Report {
         Ok(())
     }
     fn write_graphics<W: Write>(&self, out: &mut W, context: RenderContext) -> io::Result<()> {
-        self.write_graphics_with(out, context, |image, config| match viuer::print(image, config) {
-            Ok(_) => true,
-            Err(error) => { graphics::debug_print_failure(&error); false }
-        })
+        self.write_graphics_with(out, context, graphics::draw)
     }
     fn write_graphics_with<W: Write>(&self, out: &mut W, context: RenderContext,
         mut draw: impl FnMut(&image::DynamicImage, &viuer::Config) -> bool) -> io::Result<()> {
@@ -348,19 +321,26 @@ impl Report {
         // Finish the text first so the chart stays on screen when dq exits.
         self.write_rows(out, context)?;
         let started = std::time::Instant::now();
-        let image = if self.directory_tree.is_some() {
-            writeln!(out, "{}", dim("Outside → in: parents → children → grandchildren. Colors match paths above.", context.colors))?;
+        let mut image = if self.directory_tree.is_some() {
             donut::build_sunburst_image(&self.directory_rings(), chart::DONUT_PX)
         } else {
             let items: Vec<(String, u64)> = self.rows.iter().map(|row| (row.label.clone(), row.bytes)).collect();
             let segments = chart::identity_segments(&items, self.total_bytes, style::PALETTE.len());
             donut::build_donut_image(&chart::slices(&segments), chart::DONUT_PX)
         };
+        let total = self.filesystem_space.as_ref().map_or(self.total_bytes, |space| space.used_bytes);
+        donut::label_center(&mut image, &style::human_bytes(total),
+            if self.directory_tree.is_some() { 0.16 } else { 0.27 });
         let chart_at = started.elapsed();
         out.flush()?;
-        let width = if self.directory_tree.is_some() { context.width.unwrap_or(48).clamp(2, 48) as u32 } else { 40 };
-        let config = viuer::Config { absolute_offset: false, width: Some(width), height: Some(width.div_ceil(2)), ..Default::default() };
-        draw(&image, &config);
+        let config = graphics::config(context.width, if self.directory_tree.is_some() { 48 } else { 40 });
+        if !draw(&image, &config) && self.directory_tree.is_some()
+            && context.width.is_none_or(|width| width >= 80) {
+            // The directory legend above omits bars when a chart is expected. Restore them after
+            // a failed draw so this path remains as useful as ordinary text output.
+            writeln!(out, "Chart unavailable; showing text bars:")?;
+            self.write_rows(out, RenderContext { target: RenderTarget::Text, ..context })?;
+        }
         if std::env::var_os("QTOOLS_DEBUG").is_some() {
             eprintln!("dq[debug]: chart={}ms terminal={}ms", chart_at.as_millis(),
                 started.elapsed().saturating_sub(chart_at).as_millis());
@@ -607,6 +587,35 @@ fn age_bucket(days: i64) -> &'static str {
     }
 
     #[test]
+    fn chart_center_shows_used_space_and_selected_totals() {
+        for (arguments, filesystem, expected, radius) in [
+            (vec!["dq", "--min-size", "100"], true, "1.5KB", 0.16),
+            (vec!["dq", "--min-size", "100"], false, "800B", 0.16),
+            (vec!["dq", "--files", "--apparent"], false, "1KB", 0.27),
+        ] {
+            let query = DiskQuery::from_args(&Args::try_parse_from(arguments).unwrap()).unwrap();
+            let mut report = build(&hierarchy_scan(), &query);
+            report.filesystem_space = filesystem.then_some(space::Space {
+                capacity_bytes: 2000, used_bytes: 1500, free_bytes: 500, available_bytes: 400,
+            });
+            let mut expected_image = image::DynamicImage::new_rgba8(chart::DONUT_PX, chart::DONUT_PX);
+            donut::label_center(&mut expected_image, expected, radius);
+            let expected_image = expected_image.to_rgba8();
+            report.write_graphics_with(&mut Vec::new(),
+                RenderContext { target: RenderTarget::Graphics, colors: false, width: Some(80) }, |image, _| {
+                    let actual = image.to_rgba8();
+                    let center = chart::DONUT_PX as f64 / 2.0;
+                    for (x, y, pixel) in actual.enumerate_pixels() {
+                        if (x as f64 - center).hypot(y as f64 - center) < chart::DONUT_PX as f64 * radius - 2.0 {
+                            assert_eq!(pixel, expected_image.get_pixel(x, y), "center must show {expected}");
+                        }
+                    }
+                    true
+                }).unwrap();
+        }
+    }
+
+    #[test]
     fn partial_measurements_keep_free_space_and_unresolved_use_in_the_outer_ring() {
         let query = DiskQuery::from_args(&Args::try_parse_from(["dq"]).unwrap()).unwrap();
         let mut report = build(&hierarchy_scan(), &query);
@@ -626,8 +635,6 @@ fn age_bucket(days: i64) -> &'static str {
         report.render(&mut output, RenderContext { target: RenderTarget::Text, colors: false, width: None }).unwrap();
         let text = String::from_utf8(output).unwrap();
         assert!(text.contains("measured\n"));
-        assert!(text.contains("sizes are lower bounds"));
-        assert!(text.contains("--precise"));
         assert!(text.contains("[unmeasured + other filesystem use]"));
     }
 
@@ -727,7 +734,7 @@ fn age_bucket(days: i64) -> &'static str {
     }
 
     #[test]
-    fn graphics_finish_after_the_legend_and_drill_down_hint() {
+    fn graphics_follow_the_legend_and_failed_images_restore_text_bars() {
         use std::cell::RefCell;
         use std::rc::Rc;
         struct SharedOutput(Rc<RefCell<Vec<u8>>>);
@@ -749,12 +756,20 @@ fn age_bucket(days: i64) -> &'static str {
                     let text = std::str::from_utf8(&bytes).unwrap();
                     assert!(text.contains("code/sites/large"));
                     assert!(text.contains("Dig deeper:"));
-                    assert!(text.contains("Colors match paths above"));
                     length_at_image = bytes.len();
                     succeeds
                 }).unwrap();
-            assert_eq!(captured.borrow().len(), length_at_image,
-                "text after the image could scroll it out of the terminal");
+            let bytes = captured.borrow();
+            if succeeds {
+                assert_eq!(bytes.len(), length_at_image,
+                    "text after the image could scroll it out of the terminal");
+            } else {
+                let fallback = std::str::from_utf8(&bytes[length_at_image..]).unwrap();
+                assert!(fallback.contains("Chart unavailable; showing text bars:"));
+                assert!(fallback.contains("share"));
+                assert!(fallback.contains("#"));
+                assert!(!fallback.contains("dq  |"), "fallback repeated the report header");
+            }
         }
     }
 

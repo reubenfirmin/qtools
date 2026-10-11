@@ -16,6 +16,10 @@ use super::hierarchy::Totals;
 use super::pruning::{self, AllocationChecks, Bound};
 use super::summary_cache::{Candidates, FileHints, SmallFiles, SmallUpdates};
 
+// An indexed scan should save work. Bound its overhead when cold metadata or
+// stale addresses would otherwise make it more expensive than a complete walk.
+const INDEX_SCAN_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[derive(Debug, Clone)] pub struct FileFact { pub path: PathBuf, pub apparent: u64, pub allocated: u64, pub device: u64,
     pub inode: u64, pub links: u64, pub uid: u32, pub modified: i64 }
 #[derive(Debug, Clone)] pub struct DirectoryFact { pub path: PathBuf, pub allocated: u64, pub uid: u32 }
@@ -86,6 +90,11 @@ impl WorkQueue {
         candidates: None, candidate_root: PathBuf::new() } }
     fn len(&self) -> usize { self.buckets.as_ref().map_or(self.fifo.len(), |buckets| buckets.len) }
     fn is_empty(&self) -> bool { self.len() == 0 && self.candidates.is_none() }
+    fn clear(&mut self) {
+        self.candidates = None;
+        self.fifo.clear();
+        if let Some(buckets) = &mut self.buckets { **buckets = PriorityBuckets::new(); }
+    }
     fn pop_front(&mut self) -> Option<Work> {
         while self.len() < 1024 && self.candidates.is_some() {
             let Some(group) = self.candidates.as_mut().unwrap().next() else { self.candidates = None; break; };
@@ -256,15 +265,13 @@ pub fn scan(root: &Path, threads: usize, one_file_system: bool, excludes: &[Stri
 
 pub(super) fn summarize(root: &Path, query: &DiskQuery) -> SummaryScan {
     let started = std::time::Instant::now();
-    let mut bound = Bound::for_query(root, query);
+    let bound = Bound::for_query(root, query);
     let mut cache = bound.as_ref().and_then(|_| super::summary_cache::Cache::open(root));
     let candidates = cache.as_mut().and_then(|cache| cache.take_candidates());
     let hints = cache.as_ref().map_or(&[][..], |cache| cache.hints());
     let small = cache.as_ref().map_or_else(Arc::default, |cache| cache.small_files());
-    // A partial index can contain only just enough bytes to meet the bound,
-    // forcing every indexed candidate to be revisited. Establish a complete
-    // address index once; subsequent scans can select a much smaller prefix.
-    if cache.is_some() && candidates.is_none() { bound = None; }
+    // Missing historical data must not disable live early stopping. Cache::save
+    // writes an address index only if the live scan naturally completes.
     let setup = started.elapsed();
     let mut scan = summarize_with_sources(root, query, bound, hints, small, cache.is_some(), candidates);
     let walked = started.elapsed();
@@ -338,7 +345,10 @@ fn summarize_with_sources(root: &Path, query: &DiskQuery, mut bound: Option<Boun
     let mut ranked_directories = 0;
     let mut file_hints = HashMap::<PathBuf, FileHints>::new();
     let mut report_nodes = HashMap::<PathBuf, NodeId>::new();
+    let mut abandon_index = false;
+    let mut next_profile = std::time::Duration::from_secs(1);
     let (errors, _) = walk(root, options, collector, |mut batch, queue| {
+        if abandon_index { return; }
         if batch.node == usize::MAX {
             let relative = batch.directory.path.strip_prefix(root).unwrap_or(&batch.directory.path);
             batch.node = report_node(&mut tree, &mut report_nodes, relative, report_depth);
@@ -348,6 +358,14 @@ fn summarize_with_sources(root: &Path, query: &DiskQuery, mut bound: Option<Boun
         let accounting_started = profiling.then(std::time::Instant::now);
         if !indexed && batch.directory_visit { directories += 1; }
         scanned_files += batch.files.scanned; selected_files += batch.files.selected as usize;
+        if profiling && !batch.directory_visit && batch.scanned >= 1024 * 1024 * 1024 {
+            eprintln!("dq[profile]: tail elapsed={}ms bytes={} files={} path={}",
+                started.elapsed().as_millis(), batch.scanned, batch.files.scanned, batch.directory.path.display());
+        }
+        if !indexed {
+            tree.observe_yield(batch.node, batch.scanned, batch.files.scanned as u64
+                + if batch.directory_visit { 2 + batch.subdirs.len() as u64 } else { 1 });
+        }
         if batch.files.has_large_files { tree.mark_large(batch.node); }
         if !batch.directory_visit { tree.nodes[batch.node].pending_batches -= batch.units; }
         tree.nodes[batch.node].pending_batches += batch.continuations.len();
@@ -507,23 +525,41 @@ fn summarize_with_sources(root: &Path, query: &DiskQuery, mut bound: Option<Boun
             if let Some(started) = scheduling_started { scheduling_time += started.elapsed(); }
             return;
         }
+        if profiling && started.elapsed() >= next_profile {
+            eprintln!("dq[profile]: elapsed={}ms files={scanned_files} directories={directories} measured={} remaining={:?} pending-links={pending_link_bytes} queued={} path={}",
+                started.elapsed().as_millis(), tree.nodes[0].bytes, bound.as_ref().and_then(Bound::remaining), queue.len(), batch.directory.path.display());
+            next_profile = started.elapsed() + std::time::Duration::from_secs(1);
+        }
         if let Some(bound) = &mut bound {
             if allocation_checks.as_ref().is_some_and(|checks| !checks.valid()) { bound.invalidate(); }
             // The global stop already covered all pending work. Finish the
             // in-flight reads, then validate once more before reporting.
             if tree.is_closed(0) { return; }
-            let Some(remaining) = bound.remaining() else { return; };
+            // A growing filesystem can exceed the previous usage reading.
+            // Refresh once before deciding that the allocation bound is invalid.
+            let remaining = bound.remaining().or_else(|| { bound.refresh(root); bound.remaining() });
+            let Some(remaining) = remaining else {
+                if indexed { abandon_index = true; queue.clear(); }
+                return;
+            };
             // Revisit the schedule when the bound tightens, or when many cheap
             // directories failed to yield bytes. Avoid sorting after every batch.
             // Leave a little room for allocation changes while in-flight
             // directory reads finish; the final check uses the full budget.
             let stop_at = bound.capacity as f64 * query.traversal.max_error_percent / 100.0 * 0.99;
             let within_budget = remaining.saturating_add(pending_link_bytes) as f64 <= stop_at;
+            if indexed && !within_budget && started.elapsed() >= INDEX_SCAN_LIMIT {
+                abandon_index = true; queue.clear(); return;
+            }
             let tightened = remaining < previous_remaining.saturating_mul(4) / 5;
+            let ranking_due = !indexed && directories - ranked_directories >= 4096;
             if directories == 1 || within_budget || tightened
-                || directories - checkpoint_directories >= 16_384 {
+                || ranking_due || directories - checkpoint_directories >= 16_384 {
                 bound.refresh(root);
-                let Some(remaining) = bound.remaining() else { return; };
+                let Some(remaining) = bound.remaining() else {
+                    if indexed { abandon_index = true; queue.clear(); }
+                    return;
+                };
                 previous_remaining = remaining; checkpoint_directories = directories;
                 let stop_at = bound.capacity as f64 * query.traversal.max_error_percent / 100.0 * 0.99;
                 let mut changed = false;
@@ -542,7 +578,7 @@ fn summarize_with_sources(root: &Path, query: &DiskQuery, mut bound: Option<Boun
                 // Re-rank after substantial byte progress or occasionally to
                 // let stale yield estimates decay; remove newly closed work
                 // immediately. Each new directory gets a current rank anyway.
-                if changed || tightened || directories - ranked_directories >= 131_072 {
+                if changed || tightened || ranking_due {
                     queue.update(|mut work| {
                         if !work.registered {
                             if work.node == usize::MAX {
@@ -608,10 +644,14 @@ fn summarize_with_sources(root: &Path, query: &DiskQuery, mut bound: Option<Boun
     let invalid_bound = bound.as_ref().is_some_and(|bound| bound.remaining().is_none());
     let exceeded_budget = pruned_directories > 0 && bound.as_ref().is_some_and(|bound| bound.remaining().is_none_or(|remaining|
         remaining.saturating_add(pending_link_bytes) as f64 > bound.capacity as f64 * query.traversal.max_error_percent / 100.0));
-    if (indexed && invalid_bound) || exceeded_budget || (indexed && pruned_directories == 0) {
-        // Invalid bounds and an exhausted index require a fresh complete walk.
-        // Rebuild the address index too, including newly created files.
-        let mut complete = summarize_with_sources(root, query, None, &[], Arc::default(), remember, None);
+    if abandon_index || (indexed && invalid_bound) || exceeded_budget || (indexed && pruned_directories == 0) {
+        // Discard indexed measurements and establish a fresh live bound.
+        // Missing addresses must not force a complete second pass when live
+        // sampling can satisfy the same budget. A complete walk rebuilds hints.
+        if profiling {
+            eprintln!("dq[profile]: indexed-fallback={}ms files={scanned_files}", started.elapsed().as_millis());
+        }
+        let mut complete = summarize_with_sources(root, query, Bound::for_query(root, query), &[], Arc::default(), remember, None);
         complete.duration_ms = started.elapsed().as_millis();
         return complete;
     }
@@ -676,12 +716,16 @@ fn report_node(tree: &mut DirectoryTree, known: &mut HashMap<PathBuf, NodeId>, r
 
 fn priority(work: &Work, tree: &DirectoryTree) -> Priority {
     if work.probe { return 254; }
-    if let Some(pending) = &work.pending {
-        return 29 + (pending.len().max(1).ilog2() / 5).min(2) as Priority;
+    if work.pending.is_some() {
+        // Freshly sampled bytes per file rank the remaining metadata work.
+        // Cheap-file tails stay behind unopened directories, so discovering
+        // productive branches does not require reading every tiny file first.
+        if work.prior_bytes <= 4096 { return 8; }
+        return (16 + work.prior_bytes.max(1).ilog2().saturating_sub(12)).min(63) as Priority;
     }
     let depth = tree.nodes[work.node].depth;
     // Establish all three chart levels before pursuing deeper detail. Then
-    // combine directory-listing size with the observed yield of its branch.
+    // use the observed allocation per measured file in its branch.
     // These are ordering hints only, never evidence that a branch is small.
     if depth == 0 { return 255; }
     let shallow = if depth <= 3 { 4 - depth } else { 0 };
@@ -696,21 +740,25 @@ fn priority(work: &Work, tree: &DirectoryTree) -> Priority {
         let score = (32 + exponent.saturating_sub(12) as usize).min(63);
         return (shallow * 64 + score) as Priority;
     }
-    let mut ancestor = tree.branch(work.node);
-    let mut average = 4096;
+    let mut ancestor = tree.nodes[work.node].parent;
+    let mut score = 24;
     while ancestor != 0 {
         let node = &tree.nodes[ancestor];
-        if let Some(observed) = node.bytes.checked_div(node.visited) { average = observed; break; }
+        // Prefer nearby samples over an average across the whole chart branch:
+        // a large video subtree must not raise the rank of its tiny-file sibling.
+        if node.yield_cost >= 8 {
+            let average = node.yield_bytes / node.yield_cost;
+            score = (16 + average.max(1).ilog2().saturating_sub(12) as usize).min(63);
+            break;
+        }
         ancestor = node.parent;
     }
-    let listing_bytes = work.metadata.as_ref().map_or(4096, |metadata| metadata.apparent);
-    let score = listing_bytes.saturating_mul(u64::from(average.max(1).ilog2())).max(1);
-    (shallow * 64 + score.ilog2().clamp(16, 31) as usize) as Priority
+    (shallow * 64 + score) as Priority
 }
 
 fn walk<C: CollectFiles>(root: &Path, options: WalkOptions<'_>, collector: C,
     mut receive: impl FnMut(Batch<C>, &mut WorkQueue)) -> (Vec<String>, u128) {
-    const DIRECTORIES_PER_JOB: usize = 16;
+    let directories_per_job = if options.adaptive && options.candidates.is_none() { 8 } else { 16 };
     let started = std::time::Instant::now();
     let root_device = fs::metadata(root).map(|metadata| metadata.dev()).unwrap_or(0);
     let pool = ThreadPool::new(options.threads); let (tx, rx) = std::sync::mpsc::channel();
@@ -746,7 +794,7 @@ fn walk<C: CollectFiles>(root: &Path, options: WalkOptions<'_>, collector: C,
         while in_flight < options.threads.saturating_mul(2) {
             let Some(directory) = queue.pop_front() else { break };
             let mut directories = vec![directory];
-            for _ in 1..DIRECTORIES_PER_JOB {
+            for _ in 1..directories_per_job {
                 let Some(directory) = queue.pop_front() else { break };
                 directories.push(directory);
             }
@@ -768,7 +816,7 @@ fn walk<C: CollectFiles>(root: &Path, options: WalkOptions<'_>, collector: C,
             batch.finished_job = index == last;
             errors.append(&mut batch.errors); receive(batch, &mut queue);
         }
-        progress.update(completed, queue.len() + in_flight * DIRECTORIES_PER_JOB, scanned);
+        progress.update(completed, scanned);
     }
     progress.finish();
     if profiling {
@@ -809,15 +857,15 @@ fn submit<C: CollectFiles>(work: Vec<Work>, options: ReadOptions, collector: C, 
 
 fn read_directory_with<C: CollectFiles>(work: Work, options: &ReadOptions, files: C) -> Batch<C> {
     let ReadOptions { root, root_device, one_file_system, excludes, hints, .. } = options;
-    let Work { path: directory, metadata, node, pending, probe, registered, descriptor, .. } = work;
+    let Work { path: directory, metadata, node, prior_bytes, pending, probe, registered, descriptor, .. } = work;
     let directory_fact = DirectoryFact { path: PathBuf::new(),
         allocated: metadata.as_ref().map_or(0, |item| item.allocated),
         uid: metadata.as_ref().map_or(0, |item| item.uid) };
     let mut batch = Batch { directory: directory_fact, directory_inode: metadata.as_ref().map_or(0, |item| item.inode), node,
         subdirs: Vec::new(), files, errors: Vec::new(), scanned: 0, directory_visit: pending.is_none(), probe, continuations: Vec::new(), finished_job: false,
         units: 1, new_batches: usize::from(!registered), measured_directories: Vec::new() };
-    if options.adaptive && (!options.small.is_empty() || pending.is_some()) {
-        let mut batch = read_directory_deferred(&directory, metadata, pending, descriptor, options, batch);
+    if options.adaptive {
+        let mut batch = read_directory_deferred(&directory, metadata, pending, prior_bytes, descriptor, options, batch);
         batch.directory.path = directory;
         return batch;
     }
@@ -853,6 +901,7 @@ fn read_directory_with<C: CollectFiles>(work: Work, options: &ReadOptions, files
 }
 
 fn collect_native<C: CollectFiles>(directory: &Path, file: &fs::File, name: &CStr, options: &ReadOptions, batch: &mut Batch<C>) {
+    if native_excluded(directory, name, options) { return; }
     let path = || directory.join(OsStr::from_bytes(name.to_bytes()));
     let item = match metadata_at(file, name) { Ok(item) => item,
         Err(error) => { batch.errors.push(format!("{}: {error}", path().display())); return; } };
@@ -877,7 +926,15 @@ fn collect_native<C: CollectFiles>(directory: &Path, file: &fs::File, name: &CSt
     }
 }
 
-fn read_directory_deferred<C: CollectFiles>(directory: &Path, mut metadata: Option<EntryMetadata>, pending: Option<Vec<u8>>,
+fn native_excluded(directory: &Path, name: &CStr, options: &ReadOptions) -> bool {
+    if options.excludes.is_empty() { return false; }
+    let name = OsStr::from_bytes(name.to_bytes());
+    let path = directory.join(name);
+    let relative = path.strip_prefix(options.root.as_path()).unwrap_or(&path).to_string_lossy();
+    excluded(&relative, &options.excludes) || excluded(&name.to_string_lossy(), &options.excludes)
+}
+
+fn read_directory_deferred<C: CollectFiles>(directory: &Path, mut metadata: Option<EntryMetadata>, pending: Option<Vec<u8>>, prior_bytes: u64,
     descriptor: Option<Arc<fs::File>>, options: &ReadOptions, mut batch: Batch<C>) -> Batch<C> {
     use std::os::unix::fs::OpenOptionsExt;
     let flags = libc::O_DIRECTORY | if batch.node == 0 { 0 } else { libc::O_NOFOLLOW };
@@ -889,30 +946,41 @@ fn read_directory_deferred<C: CollectFiles>(directory: &Path, mut metadata: Opti
             match opened { Ok(file) => Arc::new(file), Err(error) => { batch.errors.push(format!("{}: {error}", directory.display())); return batch; } }
         }
     };
-    if batch.probe && metadata.is_none() {
+    if metadata.is_none() {
         let item = match file.metadata() { Ok(item) => item, Err(error) => {
             batch.errors.push(format!("{}: {error}", directory.display())); return batch;
         } };
-        if item.dev() != options.root_device { return batch; }
+        if !should_descend(options.one_file_system, options.root_device, item.dev()) { return batch; }
         batch.directory_inode = item.ino();
         batch.directory.allocated = item.blocks().saturating_mul(512);
         batch.directory.uid = item.uid();
         metadata = Some(EntryMetadata::from(&item));
     }
     let mut deferred = Vec::new();
+    let mut measured_files = 0_u64;
     if let Some(mut pending) = pending {
-        for _ in 0..256 {
+        // Limit speculative work while unopened branches are still yielding
+        // their first samples. Productive and indexed groups amortize larger
+        // chunks; tiny-file groups return control before another long tail.
+        let chunk = if !batch.probe && prior_bytes <= 4096 { 32 } else { 256 };
+        for _ in 0..chunk {
             if pending.is_empty() { break; }
             let end = pending.len() - 2;
             let size = u16::from_ne_bytes(pending[end..].try_into().unwrap()) as usize;
             let start = end - size;
             let name = CStr::from_bytes_with_nul(&pending[start..end]).expect("stored name has its nul terminator");
             collect_native(directory, &file, name, options, &mut batch);
+            measured_files += 1;
             pending.truncate(start);
         }
         deferred = pending;
     } else {
         let mut deferred_files = 0;
+        // Spread live samples across the listing. A prefix can consist entirely
+        // of tiny files even when a productive tail is already in the listing.
+        // Samples determine scheduling only; totals still contain measured bytes.
+        let sample_files = options.small.is_empty();
+        let mut file_ends = Vec::new();
         let mut buffer = std::mem::MaybeUninit::<[u8; 64 * 1024]>::uninit();
         loop {
             // SAFETY: getdents64 writes at most 64 KiB into this live buffer.
@@ -940,17 +1008,50 @@ fn read_directory_deferred<C: CollectFiles>(directory: &Path, mut metadata: Opti
                 offset += size;
                 if name.to_bytes() == b"." || name.to_bytes() == b".." { continue; }
                 if kind != libc::DT_DIR && kind != libc::DT_REG && kind != libc::DT_UNKNOWN { continue; }
+                if native_excluded(directory, name, options) { continue; }
                 let inode = u64::from_ne_bytes(record[..8].try_into().unwrap());
-                if kind == libc::DT_REG && options.small.contains(inode) {
+                if kind == libc::DT_DIR && sample_files && options.hints.is_empty() {
+                    // Opening the child will provide its metadata and device.
+                    // Do not fetch every child's inode before deciding to visit it.
+                    batch.subdirs.push(Work { path: directory.join(OsStr::from_bytes(name.to_bytes())),
+                        metadata: None, node: 0, prior_bytes: 0, pending: None,
+                        small_branch: false, probe: false, registered: true, descriptor: None });
+                } else if kind == libc::DT_REG && (sample_files || options.small.contains(inode)) {
                     // This is a scheduling hint. Its old size is never added
                     // to a total; a grown file remains in the unseen bound.
                     deferred.extend_from_slice(name.to_bytes_with_nul());
                     deferred.extend_from_slice(&(name.to_bytes_with_nul().len() as u16).to_ne_bytes());
                     deferred_files += 1;
-                } else { collect_native(directory, &file, name, options, &mut batch); }
+                    if sample_files { file_ends.push(deferred.len()); }
+                } else {
+                    collect_native(directory, &file, name, options, &mut batch);
+                    if kind == libc::DT_REG { measured_files += 1; }
+                }
             }
         }
-        if deferred_files <= 16 {
+        if sample_files && !file_ends.is_empty() {
+            const SAMPLES: usize = 8;
+            let count = file_ends.len();
+            let samples = count.min(SAMPLES);
+            let mut next_sample = 0;
+            let mut start = 0;
+            let mut kept = 0;
+            for (index, &end) in file_ends.iter().enumerate() {
+                let selected = if samples == 1 { 0 } else { next_sample * (count - 1) / (samples - 1) };
+                if next_sample < samples && index == selected {
+                    let name = CStr::from_bytes_with_nul(&deferred[start..end - 2]).expect("stored name has its nul terminator");
+                    collect_native(directory, &file, name, options, &mut batch);
+                    measured_files += 1;
+                    next_sample += 1;
+                } else {
+                    deferred.copy_within(start..end, kept);
+                    kept += end - start;
+                }
+                start = end;
+            }
+            deferred.truncate(kept);
+        }
+        if !sample_files && deferred_files <= 16 {
             // Reopening a directory and coordinating another job costs more
             // than measuring a few tiny files while its descriptor is live.
             // This is batching policy, not a stopping condition or size bound.
@@ -965,8 +1066,9 @@ fn read_directory_deferred<C: CollectFiles>(directory: &Path, mut metadata: Opti
         }
     }
     if !deferred.is_empty() {
-        batch.continuations.push(Work { path: directory.to_path_buf(), metadata, node: batch.node, prior_bytes: 0,
-            pending: Some(deferred), small_branch: true, probe: batch.probe, registered: true, descriptor: Some(file) });
+        let bytes_per_file = batch.scanned.checked_div(measured_files).unwrap_or(0);
+        batch.continuations.push(Work { path: directory.to_path_buf(), metadata, node: batch.node, prior_bytes: bytes_per_file,
+            pending: Some(deferred), small_branch: true, probe: batch.probe, registered: true, descriptor: batch.probe.then_some(file) });
     }
     batch
 }
@@ -1004,6 +1106,8 @@ fn glob_match(pattern: &str, value: &str) -> bool {
         fs::create_dir_all(leaf.join("deep/more")).unwrap();
         fs::write(leaf.join("deep/more/big"), vec![1_u8; 16 * 1024 * 1024]).unwrap();
         fs::write(leaf.join("deep/more/shared"), vec![2_u8; 1024 * 1024]).unwrap();
+        fs::File::open(leaf.join("deep/more/big")).unwrap().sync_all().unwrap();
+        fs::File::open(leaf.join("deep/more/shared")).unwrap().sync_all().unwrap();
         fs::hard_link(leaf.join("deep/more/shared"), leaf.join("alias")).unwrap();
         for number in 0..100 {
             let directory = leaf.join(format!("tail/{number}/nested"));
@@ -1052,14 +1156,23 @@ fn glob_match(pattern: &str, value: &str) -> bool {
 
         // A corrupt or duplicated address must invalidate the indexed result,
         // even when it would otherwise make the stopping budget look satisfied.
-        learned.file_hints.insert(0, learned.file_hints[0].clone());
+        let duplicate = learned.file_hints[0].clone();
+        learned.file_hints.splice(0..0, std::iter::repeat_n(duplicate, 8192));
         super::super::summary_cache::Cache::open(&root).unwrap().save(&learned);
         let mut cache = super::super::summary_cache::Cache::open(&root).unwrap();
+        let candidates = cache.take_candidates().unwrap();
+        // A cloned descriptor shares the reader's position, including read-ahead.
+        // Check the actual lazy stream, rather than relying on wall-clock timing.
+        let mut input = candidates.monitor_reads().unwrap();
+        let index_bytes = input.metadata().unwrap().len();
         let duplicated = summarize_with_sources(&root, &query, Some(Bound::new(bytes, bytes * 2).with_file_inode_checks(false)),
-            &[], Arc::default(), false, cache.take_candidates());
+            &[], Arc::default(), false, Some(candidates));
         assert_eq!(duplicated.levels, exact.levels);
         assert_eq!(duplicated.scanned_files, exact.scanned_files);
-        learned.file_hints.remove(0);
+        use std::io::Seek;
+        assert!(input.stream_position().unwrap() < index_bytes / 2,
+            "an invalid index must switch to traversal without reading the rest of its candidates");
+        learned.file_hints.drain(..8192);
         super::super::summary_cache::Cache::open(&root).unwrap().save(&learned);
 
         // Shrink an indexed inode, and add large allocations in a branch that
@@ -1112,6 +1225,7 @@ fn glob_match(pattern: &str, value: &str) -> bool {
             fs::write(root.join("aaa/shared"), vec![1_u8; 16 * 1024 * 1024]).unwrap();
             fs::hard_link(root.join("aaa/shared"), root.join("zzz/alias-z")).unwrap();
             if links == 3 { fs::hard_link(root.join("aaa/shared"), root.join("zzz/alias-a")).unwrap(); }
+            fs::File::open(root.join("aaa/shared")).unwrap().sync_all().unwrap();
             let query = DiskQuery::from_args(&Args::try_parse_from(["dq", "--threads", "1", "--noprogress"]).unwrap()).unwrap();
             let mut exact = summarize_with_hints(&root, &query, None, &[], Arc::default(), true);
             let bytes = exact.levels[0].values().map(|usage| usage.0).sum::<u64>();
@@ -1214,6 +1328,76 @@ fn glob_match(pattern: &str, value: &str) -> bool {
         assert!(result.files[0].path.ends_with("keep/file"));
         assert!(!result.directories.iter().any(|directory| directory.path.ends_with("cache")));
         fs::remove_dir_all(&root).unwrap();
+    }
+    #[test] fn fresh_samples_defer_tiny_file_tails_and_keep_unseen_growth_in_the_bound() {
+        use clap::Parser;
+        use crate::dq::cli::Args;
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("qtools-dq-fresh-sample-{}-{unique}", std::process::id()));
+        let leaf = root.join("code/sites/main");
+        fs::create_dir_all(&leaf).unwrap();
+        fs::write(leaf.join("large"), vec![1_u8; 128 * 1024 * 1024]).unwrap();
+        fs::File::open(leaf.join("large")).unwrap().sync_all().unwrap();
+        for number in 0..1024 { fs::write(root.join(format!("tiny-{number}")), b"tiny").unwrap(); }
+        std::os::unix::fs::symlink(leaf.join("large"), root.join("symlink")).unwrap();
+        let query = DiskQuery::from_args(&Args::try_parse_from(["dq", "--threads", "1", "--noprogress"]).unwrap()).unwrap();
+        let exact = summarize_with_bound(&root, &query, None);
+        let bytes = exact.levels[0].values().map(|usage| usage.0).sum::<u64>();
+        let sampled = summarize_with_bound(&root, &query, Some(Bound::new(bytes, bytes * 2)));
+        assert!(sampled.pruned_directories > 0);
+        assert!(sampled.scanned_files < exact.scanned_files / 8, "{} vs {} files", sampled.scanned_files, exact.scanned_files);
+        let measured = sampled.levels[0].values().map(|usage| usage.0).sum::<u64>();
+        assert!(measured <= bytes);
+        assert!(bytes - measured <= sampled.unmeasured_bytes_upper_bound.unwrap());
+        assert!(sampled.levels[2][&leaf].0 >= 128 * 1024 * 1024);
+
+        // An unmeasured file may be huge even if its directory's sample was
+        // tiny. No sampled yield can certify that the remaining work is small.
+        fs::write(root.join("tiny-1000"), vec![2_u8; 256 * 1024 * 1024]).unwrap();
+        fs::File::open(root.join("tiny-1000")).unwrap().sync_all().unwrap();
+        fs::hard_link(root.join("tiny-1000"), leaf.join("alias")).unwrap();
+        let exact = summarize_with_bound(&root, &query, None);
+        let bytes = exact.levels[0].values().map(|usage| usage.0).sum::<u64>();
+        let sampled = summarize_with_bound(&root, &query, Some(Bound::new(bytes, bytes * 2)));
+        let measured = sampled.levels[0].values().map(|usage| usage.0).sum::<u64>();
+        assert!(measured <= bytes);
+        assert!(bytes - measured <= sampled.unmeasured_bytes_upper_bound.unwrap_or(0) + sampled.known_unassigned_bytes);
+
+        // An unreachable budget must drain every continuation and reproduce
+        // the ordinary reader, including hardlinks, symlinks and exclusions.
+        let mut filtered = query.clone(); filtered.selection.excludes.push("tiny-10*".into());
+        let exact = summarize_with_bound(&root, &filtered, None);
+        let complete = summarize_with_bound(&root, &filtered, Some(Bound::new(bytes * 2, bytes * 2)));
+        assert_eq!(complete.pruned_directories, 0);
+        assert_eq!(complete.levels, exact.levels);
+        assert_eq!(complete.scanned_files, exact.scanned_files);
+        assert_eq!(complete.duplicate_hard_links, exact.duplicate_hard_links);
+        assert!(complete.errors.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test] fn live_sampling_finds_a_productive_tail_before_draining_tiny_files() {
+        use clap::Parser;
+        use crate::dq::cli::Args;
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("qtools-dq-tail-sample-{}-{unique}", std::process::id()));
+        let leaf = root.join("code/project/assets");
+        fs::create_dir_all(&leaf).unwrap();
+        for number in 0..256 { fs::write(leaf.join(format!("file-{number}")), b"tiny").unwrap(); }
+        // Change allocation without changing directory-entry order. The large
+        // file is beyond the old fixed prefix, regardless of filesystem ordering.
+        let tail = fs::read_dir(&leaf).unwrap().map(|entry| entry.unwrap().path()).last().unwrap();
+        fs::write(&tail, vec![1_u8; 128 * 1024 * 1024]).unwrap();
+        fs::File::open(&tail).unwrap().sync_all().unwrap();
+        let query = DiskQuery::from_args(&Args::try_parse_from(["dq", "--threads", "1", "--noprogress"]).unwrap()).unwrap();
+        let exact = summarize_with_bound(&root, &query, None);
+        let bytes = exact.levels[0].values().map(|usage| usage.0).sum::<u64>();
+        let sampled = summarize_with_bound(&root, &query, Some(Bound::new(bytes, bytes * 2)));
+        assert!(sampled.scanned_files <= 8, "measured {} files before finding the tail", sampled.scanned_files);
+        assert!(sampled.levels[2][&leaf].0 >= 128 * 1024 * 1024);
+        let measured = sampled.levels[0].values().map(|usage| usage.0).sum::<u64>();
+        assert!(measured <= bytes);
+        assert!(bytes - measured <= sampled.unmeasured_bytes_upper_bound.unwrap());
+        fs::remove_dir_all(root).unwrap();
     }
     #[test] fn stale_small_file_and_branch_hints_cannot_hide_new_large_allocations() {
         use clap::Parser;

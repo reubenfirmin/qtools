@@ -340,11 +340,13 @@
 
     #[test]
     fn injectable_graphics_covers_two_ring_single_ring_empty_and_failure_paths() {
+        let options = NetOpts { width: Some(9), ..opts() };
         for succeeds in [true, false] {
             let mut output = Vec::new();
-            write_graphics_with(&mut output, &report(), 10, 100, &opts(), |image, config| {
+            write_graphics_with(&mut output, &report(), 10, 100, &options, |image, config| {
                 assert!(image.width() > 0);
-                assert!(config.width.is_some());
+                assert_eq!(config.width, Some(9));
+                assert_eq!(config.height, Some(5));
                 succeeds
             }).unwrap();
             let text = String::from_utf8(output).unwrap();

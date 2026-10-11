@@ -309,12 +309,7 @@ fn conn_segments(r: &net::NetReport, top: usize, count: impl Fn(&net::NetCluster
 /// single ring of total connections says it all. Falls back to the plain grid (never re-writing
 /// the header) when there is nothing to chart or the image fails to render.
 pub fn write_graphics<W: Write>(out: &mut W, r: &net::NetReport, mem_used: u64, mem_total: u64, opts: &NetOpts) -> io::Result<()> {
-    write_graphics_with(out, r, mem_used, mem_total, opts, |image, config| {
-        match viuer::print(image, config) {
-            Ok(_) => true,
-            Err(error) => { graphics::debug_print_failure(&error); false }
-        }
-    })
+    write_graphics_with(out, r, mem_used, mem_total, opts, graphics::draw)
 }
 
 fn write_graphics_with<W: Write>(out: &mut W, r: &net::NetReport, mem_used: u64, mem_total: u64,
@@ -323,13 +318,7 @@ fn write_graphics_with<W: Write>(out: &mut W, r: &net::NetReport, mem_used: u64,
     if r.total_conns == 0 {
         return write_body(out, r, opts, false);
     }
-    let cols = opts.width.unwrap_or(80).clamp(16, 40) as u32;
-    let config = viuer::Config {
-        absolute_offset: false,
-        width: Some(cols),
-        height: Some((cols / 2).max(8)),
-        ..Default::default()
-    };
+    let config = graphics::config(opts.width, 40);
     let total_lsn = r.total_listening as u64;
     let total_est = (r.total_conns - r.total_listening) as u64;
     let two_ring = total_est > 0 && total_lsn > 0;

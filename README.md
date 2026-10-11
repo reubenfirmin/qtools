@@ -5,6 +5,15 @@ eating my \<resource\>?" on Linux. Each tool is a terse two-letter `_q` ("query"
 common rendering core: donut charts on graphics-capable terminals, colored text bars everywhere else,
 JSON for machines. Written in Rust.
 
+Charts support the Kitty graphics protocol, iTerm2 inline images, and Sixel. Detection selects one
+protocol for the whole report, and charts fit the terminal's available columns. Other terminals,
+tmux, and GNU screen use text bars. `--no-color` also forces text; `QTOOLS_DEBUG=1` reports graphics
+detection and rendering failures.
+
+Over SSH, Kitty and Sixel can be detected through terminal queries. iTerm2 detection uses
+`TERM_PROGRAM`, `LC_TERMINAL`, or `KONSOLE_VERSION`; if those hints are absent remotely and neither
+queried protocol is available, the report uses text bars.
+
 * **`dq`** (disk query) - what's using my disk space? A faster, smarter `du`.
 * **`pq`** (process query) - what's eating my CPU, memory, or swap? Who's listening on, or talking to,
   the network? A clustered, visual `top` with a friendlier `pkill` and an `lsof -i`/`ss` replacement
@@ -82,21 +91,25 @@ The summary retains individual file records only for hard-link deduplication.
 JSON and file, owner, and age views collect detailed
 file facts. Fresh exact totals require visiting every entry: ordinary directory metadata does
 not contain recursive sizes. The default chart can stop branches using bounds as described below.
-The default worker count follows available CPU parallelism, up to 16; `--threads N` overrides it.
+The default worker count is 50; `--threads N` overrides it. Metadata reads wait on filesystem
+I/O, so their concurrency is independent of the CPU count.
 
 The default view shows the distribution across immediate parent directories. Its chart reads
 from the outside in: parents, significant children, then grandchildren, with child arcs aligned
 within their parent's angle. Where a branch has no further displayed detail, its deeper ring
-space is transparent. The color wheel is divided according to each hierarchy's visible
-branches: complex parents get broader hue ranges, and neighboring hierarchies get contrasting
-colors. Swatches in the indented path list match the chart. Smaller subdirectories and files
+space is transparent. Small views spread directory colors across the whole wheel. Busier
+views divide the wheel according to each hierarchy's visible branches: complex parents get
+broader hue ranges, and neighboring hierarchies get contrasting colors.
+The largest directory starts in blue.
+Swatches in the indented path list match the chart. Smaller subdirectories and files
 use a contrasting shade of their parent's hue; root files have their own color. Gray marks
 hidden parent groups and filesystem use outside the scan. When scanning a filesystem mount
 point with allocated, single-filesystem accounting, free space appears
 alongside directories in the outer parent ring, with no child arcs beneath it. Unscanned
 filesystem use appears as a separate gray arc in that same ring. Chart and path-list percentages
 refer to filesystem capacity when shown; subdirectory scans use the whole pie and percentages
-of the scan. Free space includes
+of the scan. The chart center shows occupied filesystem bytes at mount points and the selected
+scan total in other views. Free space includes
 reserved blocks; the report also gives available space. The path list comes before the chart
 to keep the image visible when a long report scrolls. The report has no mouse interaction: run `dq` on a listed
 path to dig deeper. Text output carries the same directory breakdown. `--all` shows all parent
@@ -108,12 +121,19 @@ At ext4 filesystem roots, dq uses a **cost-aware best-first scan with a global a
 bound**. Filesystem usage, available immediately from the same counters used by `df`, gives
 an upper bound on the allocation left to discover.
 
-1. **Build an address index once.** The first run walks the accessible tree completely and
-   records directory groups, file names, and their allocation totals in a private index in
-   the system temporary directory. The index is bounded in size and retains files with at
-   least 4 KiB allocated. This initial run pays the cost of a complete walk.
-2. **Measure productive directories first.** Later runs stream directory groups in descending
-   estimated return per metadata operation:
+1. **Sample live directories for scheduling.** Without an index, workers list directories
+   under an open descriptor and measure up to eight regular files spread across the listing.
+   Child metadata is read when the child is opened. Fresh allocation per file guides the
+   order of subsequent reads. Pending priorities are refreshed as new samples arrive.
+   Tiny-file tails use short batches and stay
+   behind unopened directories, letting the scan discover productive branches first.
+   Samples guide scheduling only; they never supply estimated bytes to the report or bound.
+2. **Use historical addresses when available.** A naturally completed scan records directory
+   groups, file names, and allocation totals in a private index in the system temporary
+   directory. A missing index does not require an initial complete walk. Partial scans leave
+   existing indexes untouched. Equivalent root paths share the same index, including running
+   `dq` from the mount point. Indexed runs stream directory groups in descending estimated
+   return per metadata operation:
 
    ```text
    priority = previous allocated bytes / (indexed file count + directory-open cost)
@@ -139,12 +159,14 @@ an upper bound on the allocation left to discover.
    unresolved filesystem use. Reported directory sizes remain lower bounds, and unresolved
    allocation appears in the gray outer-ring arc.
 
-Historical data determines where to measure next; fresh measurements determine whether dq
+Historical data and live samples guide where to measure next; fresh measurements determine whether dq
 can stop. A newly created or enlarged file remains in the unseen allocation until measured.
-If the index runs out before meeting the bound, or physical aliases invalidate the bound,
-dq completes a fresh traversal and rebuilds the index. Partial scans preserve the complete
-index. Unsupported kernels and bind aliases use ordinary traversal, ordered by directory
-listing size, observed yield, and depth. Insignificant branches can be deferred and reopened
+If the index runs out before meeting the bound, physical aliases invalidate the bound, or
+the indexed pass takes two seconds without meeting the budget, dq starts fresh live sampling
+with a newly checked allocation bound. An invalid pass stops scheduling measurements immediately;
+work already dispatched finishes before traversal starts. A naturally completed traversal
+rebuilds the index. Unsupported kernels and bind aliases use live traversal, ordered by
+freshly observed yield and depth. Insignificant branches can be deferred and reopened
 if the global budget still requires their measurements.
 
 `--max-error PERCENT` defaults to 3% of **filesystem capacity**, not used space or each
@@ -160,10 +182,10 @@ for cost-aware measurement order and [threshold aggregation](https://www.cs.ubc.
 for the separation between scheduling hints and fresh lower/upper stopping bounds. It does
 not assume that a historical index proves a directory's current size.
 
-In three alternating warm comparisons on `/expanse` (about 405,000 directories), the default
-mode had a median of 0.75 seconds versus 1.36 seconds for `--precise`, visiting about 123,000
-directories: roughly 70% fewer visits and 1.8 times faster. These measurements include scanning
-and text reporting after the initial index build; they exclude terminal graphics rendering.
+To measure live traversal without historical indexes, run with `QTOOLS_NO_CACHE=1`.
+`QTOOLS_PROFILE=1` reports scan time, work counts, and allocation progress. Compare default
+and `--precise` runs under the same filesystem-cache conditions; indexed runs measure a
+different path and do not demonstrate live sampling performance.
 
     dq [dir]                        # parents with aligned subdirectory rings
     dq --files --top 30 /var         # largest files recursively

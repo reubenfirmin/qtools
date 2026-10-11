@@ -174,6 +174,157 @@ sys.exit(os.waitstatus_to_exitcode(status))"#;
     assert!(String::from_utf8_lossy(&output.stdout).contains("pq"));
 }
 
+// Emulate protocol replies without opening desktop terminals. The deadline makes an unexpected
+// second probe fail the test instead of hanging the suite; terminal modes are checked after exit.
+fn terminal_report(binary: &str, arguments: &[&str], profile: &str, columns: usize) -> serde_json::Value {
+    let executable = if binary == "pq" { env!("CARGO_BIN_EXE_pq") } else { env!("CARGO_BIN_EXE_dq") };
+    let harness = r#"import fcntl,json,os,pty,re,select,signal,struct,sys,termios,time
+profile=sys.argv[2]
+ready_read,ready_write=os.pipe()
+pid,fd=pty.fork()
+if pid == 0:
+    os.close(ready_write)
+    os.read(ready_read,1)
+    os.close(ready_read)
+    for key in ('TERM_PROGRAM','LC_TERMINAL','KONSOLE_VERSION','TMUX','STY','SSH_CONNECTION'):
+        os.environ.pop(key,None)
+    os.environ['TERM']='xterm-256color'
+    if profile == 'iterm': os.environ['TERM_PROGRAM']='WezTerm'
+    if profile == 'iterm_ssh':
+        os.environ['LC_TERMINAL']='iTerm2'
+        os.environ['SSH_CONNECTION']='192.0.2.1 12345 192.0.2.2 22'
+    if profile == 'tmux':
+        os.environ['TMUX']='/tmp/test-tmux,123,0'
+        os.environ['TERM_PROGRAM']='WezTerm'
+    if profile == 'screen': os.environ['STY']='123.test-screen'
+    if profile == 'term_tmux': os.environ['TERM']='tmux-256color'
+    if profile in ('kitty_remote','text_ssh'):
+        os.environ['SSH_CONNECTION']='192.0.2.1 12345 192.0.2.2 22'
+    os.execv(sys.argv[1],[sys.argv[1],*sys.argv[4:]])
+fcntl.ioctl(fd,termios.TIOCSWINSZ,struct.pack('HHHH',24,int(sys.argv[3]),0,0))
+original=termios.tcgetattr(fd)
+os.close(ready_read)
+os.write(ready_write,b'1')
+os.close(ready_write)
+data=bytearray()
+pending=bytearray()
+queries=re.compile(rb'\x1b_G[^\x1b]*\x1b\\|\x1b\[c|\x1b\[5n')
+attributes=0
+status=None
+deadline=time.monotonic()+5
+try:
+    while time.monotonic()<deadline:
+        if select.select([fd],[],[],0.05)[0]:
+            try: chunk=os.read(fd,65536)
+            except OSError: break
+            if not chunk: break
+            data.extend(chunk)
+            pending.extend(chunk)
+            while True:
+                match=queries.search(pending)
+                if match is None: break
+                token=match.group()
+                del pending[:match.end()]
+                if token==b'\x1b[c':
+                    attributes+=1
+                    if profile=='sixel': os.write(fd,b'\x1b[?62;1;4c')
+                    elif profile.startswith('text') or (profile.startswith('kitty') and attributes==1):
+                        os.write(fd,b'\x1b[?62;1;2c')
+                    # Kitty answers only the original DA1: rendering must not query Sixel again.
+                elif token==b'\x1b[5n' and profile=='kitty_local':
+                    os.write(fd,b'\x1b[0n')
+                elif b'a=q' in token and profile.startswith('kitty'):
+                    reply=b'OK' if b't=d' in token or profile=='kitty_local' else b'ENOENT'
+                    os.write(fd,b'\x1b_Gi=31;'+reply+b'\x1b\\')
+        done,result=os.waitpid(pid,os.WNOHANG)
+        if done:
+            status=result
+            break
+    if status is None:
+        done,result=os.waitpid(pid,os.WNOHANG)
+        if done: status=result
+    if status is None:
+        os.kill(pid,signal.SIGKILL)
+        os.waitpid(pid,0)
+        raise AssertionError('terminal report hung: '+profile)
+    assert os.waitstatus_to_exitcode(status)==0, data[-1000:].decode(errors='replace')
+    assert termios.tcgetattr(fd)==original, 'terminal mode was not restored: '+profile
+    chart=re.search(rb'\x1b_Gf=32[^;]*',data)
+    width=re.search(rb',c=(\d+),r=(\d+)',chart.group()) if chart else None
+    print(json.dumps({'attributes':attributes,'kitty':chart is not None,
+        'width':int(width[1]) if width else None,'height':int(width[2]) if width else None,
+        'iterm':b'\x1b]1337;File=' in data,'sixel':re.search(rb'\x1bP[0-9;]*q',data) is not None,
+        'bars':b'###' in data}))
+finally:
+    os.close(fd)"#;
+    let output = Command::new("python3")
+        .args(["-c", harness, executable, profile, &columns.to_string()])
+        .args(arguments)
+        .env("XDG_STATE_HOME", state_dir(profile))
+        .env_remove("QTOOLS_INTERNAL_UPDATE_CHECK")
+        .output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn terminal_graphics_reuse_the_selected_protocol_locally_and_over_ssh() {
+    let arguments = ["--memory", "--interval", "0", "--top", "1"];
+    for profile in ["kitty_local", "kitty_remote"] {
+        let result = terminal_report("pq", &arguments, profile, 80);
+        assert_eq!(result["kitty"], true, "{profile}: {result}");
+        assert_eq!(result["attributes"], 1, "{profile}: {result}");
+        assert_eq!(result["width"], 40);
+        assert_eq!(result["height"], 20);
+    }
+    for profile in ["iterm", "iterm_ssh"] {
+        let result = terminal_report("pq", &arguments, profile, 80);
+        assert_eq!(result["iterm"], true, "{profile}: {result}");
+        assert_eq!(result["attributes"], 0, "{profile}: {result}");
+    }
+    let result = terminal_report("pq", &arguments, "sixel", 80);
+    assert_eq!(result["sixel"], true, "{result}");
+    assert_eq!(result["attributes"], 2, "{result}");
+}
+
+#[test]
+fn terminal_graphics_fall_back_to_text_for_multiplexers_and_unresponsive_terminals() {
+    let arguments = ["--memory", "--interval", "0", "--top", "1"];
+    for profile in ["tmux", "screen", "term_tmux", "text", "text_ssh", "silent"] {
+        let result = terminal_report("pq", &arguments, profile, 80);
+        assert_eq!(result["kitty"], false, "{profile}: {result}");
+        assert_eq!(result["iterm"], false, "{profile}: {result}");
+        assert_eq!(result["sixel"], false, "{profile}: {result}");
+        assert_eq!(result["bars"], true, "{profile}: {result}");
+        if ["tmux", "screen", "term_tmux"].contains(&profile) {
+            assert_eq!(result["attributes"], 0, "{profile}: {result}");
+        }
+    }
+    let result = terminal_report("pq", &["--memory", "--interval", "0", "--top", "1", "--no-color"], "iterm", 80);
+    assert_eq!(result["iterm"], false, "{result}");
+    assert_eq!(result["attributes"], 0);
+    assert_eq!(result["bars"], true);
+}
+
+#[test]
+fn terminal_charts_fit_narrow_panes_in_process_ranked_and_disk_views() {
+    for arguments in [vec!["--memory", "--interval", "0", "--top", "1"],
+        vec!["--fds", "--interval", "0", "--top", "1"]] {
+        let result = terminal_report("pq", &arguments, "kitty_remote", 9);
+        assert_eq!(result["width"], 9, "{arguments:?}: {result}");
+        assert_eq!(result["height"], 5);
+    }
+    let root = state_dir("narrow-dq");
+    fs::write(root.join("sample"), b"chart data").unwrap();
+    for arguments in [vec!["--apparent", "--files", root.to_str().unwrap()],
+        vec!["--apparent", root.to_str().unwrap()]] {
+        let result = terminal_report("dq", &arguments, "kitty_remote", 9);
+        assert_eq!(result["width"], 9, "{arguments:?}: {result}");
+        assert_eq!(result["height"], 5);
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn pq_kill_actions_are_exercised_safely_in_dry_run_mode() {
     let mut sleeper = Command::new("sleep").arg("30").spawn().unwrap();
@@ -302,7 +453,7 @@ fn dq_human_views_and_filters_run_end_to_end() {
             let text = String::from_utf8_lossy(&output.stdout);
             assert!(!text.contains("[free space"));
             assert!(!text.contains("Filesystem:"));
-            assert!(text.contains("percentages are of the whole scan"));
+            assert!(text.contains("path"));
         }
     }
     let jsonl = run("dq", "jsonl", &["--files", "--jsonl", "--all", root_text]);

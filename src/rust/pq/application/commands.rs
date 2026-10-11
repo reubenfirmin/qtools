@@ -112,6 +112,7 @@ pub(super) fn run_io_report(plan: &QueryPlan) -> Result<(), String> {
         metric: plan.io_metric, top: plan.output.top.unwrap_or(15), verbose: plan.output.verbose,
         compact_json: context.compact_json(), sample_interval_ms: plan.interval_ms,
         colors: context.colors,
+        width: context.width,
     };
     render::stdout("pq", |out| io_report::render(out, &clusters, &opts, context));
     Ok(())

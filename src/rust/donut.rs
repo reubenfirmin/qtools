@@ -49,6 +49,36 @@ pub fn build_donut_image(slices: &[Slice], w: u32) -> image::DynamicImage {
     image::DynamicImage::ImageRgba8(img)
 }
 
+/// Center a compact size label inside a chart's hole, scaling its diagonal to fit.
+pub fn label_center(image: &mut image::DynamicImage, label: &str, inner_radius: f64) {
+    use image::imageops::{overlay, resize, FilterType};
+    use std::sync::OnceLock;
+    // Embedded Adwaita Mono Bold glyphs avoid a runtime font lookup or a new dependency.
+    // The atlas contains its copyright and SIL Open Font License in PNG text metadata.
+    const CHARACTERS: &str = "0123456789.BKMGTPE";
+    const CELL_WIDTH: u32 = 64;
+    static FONT: OnceLock<image::RgbaImage> = OnceLock::new();
+    if label.is_empty() || image.width() == 0 || image.height() == 0 { return; }
+    let font = FONT.get_or_init(|| image::load_from_memory(include_bytes!("assets/size-label.png"))
+        .expect("embedded size-label font is valid PNG").to_rgba8());
+    let mut text = image::RgbaImage::new(label.len() as u32 * CELL_WIDTH, font.height());
+    for (index, character) in label.bytes().enumerate() {
+        let glyph = CHARACTERS.bytes().position(|candidate| candidate == character)
+            .expect("size labels contain digits, a decimal point and byte units");
+        let glyph = image::imageops::crop_imm(font, glyph as u32 * CELL_WIDTH, 0, CELL_WIDTH, font.height());
+        overlay(&mut text, &glyph.to_image(), index as i64 * CELL_WIDTH as i64, 0);
+    }
+    let radius = image.width().min(image.height()) as f64 * inner_radius;
+    let scale = (radius * 1.8 / (text.width() as f64).hypot(text.height() as f64))
+        .min(radius * 0.8 / text.height() as f64);
+    let width = (text.width() as f64 * scale).round().max(1.0) as u32;
+    let height = (text.height() as f64 * scale).round().max(1.0) as u32;
+    let text = resize(&text, width, height, FilterType::Lanczos3);
+    let x = (image.width() as i64 - width as i64) / 2;
+    let y = (image.height() as i64 - height as i64) / 2;
+    overlay(image, &text, x, y);
+}
+
 /// Radius bands (as a fraction of the square's width) for the two concentric rings of
 /// `build_two_ring_image`: a visible gap separates the outer band from the inner one.
 const RING_OUTER: (f64, f64) = (0.34, 0.47);
@@ -247,6 +277,28 @@ mod tests {
         assert_eq!(build_donut_image(&slices, 200).dimensions(), (200, 200));
         // col=30, gap=6, unit=10 -> width (2*30+6)*10, height 30*10.
         assert_eq!(build_two_donut_image(&slices, &slices, 30, 6, 10).dimensions(), (660, 300));
+    }
+
+    #[test]
+    fn size_labels_fit_the_hole_at_different_chart_sizes() {
+        for width in [100, 200, 600] {
+            for radius in [0.16, INNER_RADIUS] {
+                for label in ["0B", "245MB", "24.4TB", "999.9GB", "18.4EB"] {
+                    let mut image = build_donut_image(&[], width);
+                    label_center(&mut image, label, radius);
+                    let pixels = image.to_rgba8();
+                    let mut painted = 0;
+                    for (x, y, pixel) in pixels.enumerate_pixels() {
+                        if pixel[3] == 0 { continue; }
+                        painted += 1;
+                        let center = width as f64 / 2.0;
+                        assert!((x as f64 + 0.5 - center).hypot(y as f64 + 0.5 - center)
+                            < width as f64 * radius, "{label} extends outside the hole");
+                    }
+                    assert!(painted > 0, "{label} must be visible");
+                }
+            }
+        }
     }
 
     #[test]

@@ -61,7 +61,11 @@ fn bucket_updates_preserve_every_eligible_directory_across_priority_boundaries()
     });
     let expected = (0..255).filter(|node| node % 3 != 0).collect::<Vec<_>>();
     assert_eq!(queue.len(), expected.len());
-    let actual = std::iter::from_fn(|| queue.pop_front()).map(|work| work.node).collect::<Vec<_>>();
+    let mut actual = std::iter::from_fn(|| queue.pop_front()).map(|work| work.node).collect::<Vec<_>>();
+    // Positive-yield work retains ranked ordering above the low frontier.
+    let ranked = expected.iter().copied().filter(|node| *node < 239).collect::<Vec<_>>();
+    assert_eq!(actual[..ranked.len()], ranked);
+    actual.sort_unstable();
     assert_eq!(actual, expected);
     assert!(queue.is_empty());
     // Re-ranking must retain order among equally ranked work.
@@ -72,6 +76,25 @@ fn bucket_updates_preserve_every_eligible_directory_across_priority_boundaries()
     queue.update(|work| Some((work, 100)));
     let actual = std::iter::from_fn(|| queue.pop_front()).map(|work| work.node).collect::<Vec<_>>();
     assert_eq!(actual, (0..10).rev().collect::<Vec<_>>());
+}
+
+#[test]
+fn low_yield_depth_selection_preserves_all_work_and_does_not_weight_depth_by_population() {
+    fn sequence() -> Vec<usize> {
+        let mut queue = WorkQueue::new(true);
+        for node in 0..1001 {
+            let mut work = Work::directory(PathBuf::new(), None);
+            work.node = node;
+            work.depth = if node == 1000 { 6 } else { 5 };
+            queue.push_ranked(work, 16);
+        }
+        std::iter::from_fn(|| queue.pop_front()).map(|work| work.node).collect()
+    }
+    let mut actual = sequence();
+    assert_eq!(actual, sequence());
+    assert!(actual[..20].contains(&1000));
+    actual.sort_unstable();
+    assert_eq!(actual, (0..1001).collect::<Vec<_>>());
 }
 
 #[test]
@@ -163,6 +186,26 @@ fn live_sampling_finds_a_productive_tail_before_draining_tiny_files() {
     let measured = sampled.levels[0].values().map(|usage| usage.0).sum::<u64>();
     assert!(measured <= bytes);
     assert!(bytes - measured <= sampled.unmeasured_bytes_upper_bound.unwrap());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn shallow_small_files_cannot_hide_a_large_file_deep_in_the_tree() {
+    let root = root("deep-unseen");
+    fs::create_dir_all(&root).unwrap();
+    for number in 0..256 { fs::write(root.join(format!("tiny-{number}")), b"tiny").unwrap(); }
+    let mut leaf = root.join("code/project/assets");
+    for _ in 0..40 { leaf.push("nested"); }
+    fs::create_dir_all(&leaf).unwrap();
+    fs::write(leaf.join("large"), vec![1_u8; 16 * 1024 * 1024]).unwrap();
+    fs::File::open(leaf.join("large")).unwrap().sync_all().unwrap();
+    let query = query();
+    let exact = summarize_with_bound(&root, &query, None);
+    let bytes = exact.levels[0].values().map(|usage| usage.0).sum::<u64>();
+    let bounded = summarize_with_bound(&root, &query, Some(Bound::new(bytes, bytes * 2)));
+    assert!(bounded.levels[2][&root.join("code/project/assets")].0 >= 16 * 1024 * 1024);
+    let measured = bounded.levels[0].values().map(|usage| usage.0).sum::<u64>();
+    assert!(bytes - measured <= bounded.unmeasured_bytes_upper_bound.unwrap_or(0));
     fs::remove_dir_all(root).unwrap();
 }
 

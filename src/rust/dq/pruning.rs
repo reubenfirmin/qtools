@@ -22,7 +22,7 @@ pub(super) struct Bound {
     valid: bool,
     check_file_inodes: bool,
     trust_link_counts: bool,
-    mount_layout: Option<Vec<u8>>,
+    mount_layout: Option<(PathBuf, Vec<u8>)>,
 }
 
 impl Bound {
@@ -46,7 +46,7 @@ impl Bound {
                 // batch rather than recorded individually in the bitmap.
                 bound.check_file_inodes = false;
                 bound.trust_link_counts = true;
-                bound.mount_layout = Some(layout);
+                bound.mount_layout = Some((canonical.clone(), relevant_mount_layout(&canonical, &layout)?));
             }
         }
         Some(bound)
@@ -88,7 +88,7 @@ impl Bound {
         if page[index] & bit != 0 {
             // A repeated singly-linked file or directory can indicate a bind
             // alias. Its additive chart totals cannot bound physical usage.
-            self.valid = false;
+            self.invalidate("inode visited more than once");
             return;
         }
         page[index] |= bit;
@@ -99,7 +99,12 @@ impl Bound {
         self.valid.then(|| self.used.checked_sub(self.accounted)).flatten()
     }
 
-    pub fn invalidate(&mut self) { self.valid = false; }
+    pub fn invalidate(&mut self, reason: &str) {
+        if self.valid && (std::env::var_os("QTOOLS_DEBUG").is_some() || std::env::var_os("QTOOLS_PROFILE").is_some()) {
+            eprintln!("dq[debug]: allocation bound invalidated: {reason}");
+        }
+        self.valid = false;
+    }
 
     pub fn refresh(&mut self, root: &Path) {
         if let Some(space) = Space::read(root) {
@@ -108,11 +113,35 @@ impl Bound {
         } else if self.mount_layout.is_some() {
             // A checked filesystem root must remain readable for the final
             // allocation certificate to refer to the same filesystem.
-            self.valid = false;
+            self.invalidate("filesystem capacity could not be refreshed");
         }
-        if self.mount_layout.as_ref().is_some_and(|layout|
-            fs::read("/proc/self/mountinfo").ok().as_ref() != Some(layout)) { self.valid = false; }
+        if self.mount_layout.is_some() {
+            self.validate_mount_layout(fs::read("/proc/self/mountinfo").ok().as_deref());
+        }
     }
+
+    fn validate_mount_layout(&mut self, layout: Option<&[u8]>) {
+        let changed = self.mount_layout.as_ref().is_some_and(|(root, previous)|
+            layout.and_then(|layout| relevant_mount_layout(root, layout)).as_ref() != Some(previous));
+        if changed { self.invalidate("mount layout affecting the scan changed"); }
+    }
+}
+
+/// Changes outside the scanned tree cannot introduce aliases or hide its
+/// entries. Keep ancestors too: replacing a covering mount changes the tree.
+fn relevant_mount_layout(root: &Path, layout: &[u8]) -> Option<Vec<u8>> {
+    let mut relevant = Vec::new();
+    for line in layout.split(|byte| *byte == b'\n').filter(|line| !line.is_empty()) {
+        let fields = line.split(|byte| *byte == b' ').take(6).collect::<Vec<_>>();
+        if fields.len() != 6 { return None; }
+        let target = mount_path(fields[4])?;
+        if !target.is_absolute() { return None; }
+        if target.starts_with(root) || root.starts_with(&target) {
+            relevant.extend_from_slice(line);
+            relevant.push(b'\n');
+        }
+    }
+    (!relevant.is_empty()).then_some(relevant)
 }
 
 /// Same-device mounts are harmless when their source root is exactly the
@@ -258,6 +287,35 @@ mod tests {
         assert_eq!(file_aliases_possible(Path::new("/data"), b"8:2", b"malformed"), None);
         let spaced = b"1 0 8:2 / /data\\040disk rw - ext4 /dev/sda2 rw\n2 1 8:2 /code\\040files /data\\040disk/code\\040files rw - ext4 /dev/sda2 rw\n";
         assert_eq!(file_aliases_possible(Path::new("/data disk"), b"8:2", spaced), Some(false));
+    }
+
+    #[test] fn unrelated_mount_changes_preserve_the_allocation_certificate() {
+        let original = b"1 0 8:18 / / rw - ext4 /dev/sdb2 rw\n2 1 8:2 / /data rw - ext4 /dev/sda2 rw\n3 1 0:5 / /run/app rw - tmpfs tmpfs rw\n";
+        let mut bound = Bound::new(100, 200);
+        bound.record(1, 20);
+        bound.mount_layout = Some((PathBuf::from("/data"), relevant_mount_layout(Path::new("/data"), original).unwrap()));
+        // App mounts and names sharing only a textual prefix are unrelated.
+        let changed = b"1 0 8:18 / / rw - ext4 /dev/sdb2 rw\n2 1 8:2 / /data rw - ext4 /dev/sda2 rw\n4 1 0:7 / /run/other rw - tmpfs tmpfs rw\n5 1 8:2 / /database rw - ext4 /dev/sda2 rw\n";
+        bound.validate_mount_layout(Some(changed));
+        assert_eq!(bound.remaining(), Some(80));
+        let mut aliased = changed.to_vec();
+        aliased.extend_from_slice(b"6 2 8:2 /file /data/alias rw - ext4 /dev/sda2 rw\n");
+        bound.validate_mount_layout(Some(&aliased));
+        assert_eq!(bound.remaining(), None);
+    }
+
+    #[test] fn covering_and_nested_mount_changes_still_invalidate_the_certificate() {
+        let original = b"1 0 8:18 / / rw - ext4 /dev/sdb2 rw\n2 1 8:2 / /data\\040disk rw - ext4 /dev/sda2 rw\n";
+        for changed in [
+            b"1 0 8:19 / / rw - ext4 /dev/sdb3 rw\n2 1 8:2 / /data\\040disk rw - ext4 /dev/sda2 rw\n".as_slice(),
+            b"1 0 8:18 / / rw - ext4 /dev/sdb2 rw\n2 1 8:2 / /data\\040disk rw - ext4 /dev/sda2 rw\n3 2 0:5 / /data\\040disk/cache rw - tmpfs tmpfs rw\n".as_slice(),
+            b"malformed".as_slice(),
+        ] {
+            let mut bound = Bound::new(100, 200);
+            bound.mount_layout = Some((PathBuf::from("/data disk"), relevant_mount_layout(Path::new("/data disk"), original).unwrap()));
+            bound.validate_mount_layout(Some(changed));
+            assert_eq!(bound.remaining(), None);
+        }
     }
     fn tree(sites_bytes: u64, oss_bytes: u64) -> DirectoryTree {
         let mut tree = DirectoryTree::new(3);

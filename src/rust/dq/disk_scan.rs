@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use super::hierarchy::Totals;
 
 mod scheduling;
+mod path_yield;
 mod summary;
 mod traversal;
 

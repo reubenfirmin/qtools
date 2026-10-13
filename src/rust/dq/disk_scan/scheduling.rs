@@ -2,18 +2,43 @@
 use std::collections::VecDeque;
 
 use super::super::directory_tree::DirectoryTree;
+use super::path_yield::{PathYields, MIN_OBSERVATION_COST};
 use super::traversal::{Work, WorkKind};
 
 pub(super) type Priority = u8;
 
+// Half-octave yield ranks occupy 0..=63. The first three chart levels have
+// separate ranges above them; low ranks explore depths uniformly.
+const MAX_YIELD_PRIORITY: Priority = 63;
+const LOW_YIELD_MAX_PRIORITY: Priority = 16;
+const DEPTH_BUCKET_COUNT: usize = 64;
+const SHALLOW_LEVELS: usize = 3;
+const SHALLOW_PRIORITY_STRIDE: usize = 64;
+const UNKNOWN_YIELD_BYTES: u64 = 1024 * 1024;
+// A fixed seed makes a given queue history reproducible, including reranking.
+const EXPLORATION_SEED: u64 = 0x42d0_51a7_b831_f607;
+
 // Logarithmic buckets keep push/pop independent of the frontier size.
 struct PriorityBuckets {
     buckets: [VecDeque<Work>; 256], occupied: [u64; 4], len: usize,
+    low_depths: [Vec<Work>; DEPTH_BUCKET_COUNT], low_occupied: u64, random: u64,
 }
 
 impl PriorityBuckets {
-    fn new() -> Self { Self { buckets: std::array::from_fn(|_| VecDeque::new()), occupied: [0; 4], len: 0 } }
+    fn new() -> Self {
+        Self { buckets: std::array::from_fn(|_| VecDeque::new()), occupied: [0; 4], len: 0,
+            low_depths: std::array::from_fn(|_| Vec::new()), low_occupied: 0, random: EXPLORATION_SEED }
+    }
     fn push(&mut self, work: Work, priority: Priority, preserve_order: bool) {
+        if priority <= LOW_YIELD_MAX_PRIORITY {
+            // Choose depths uniformly rather than letting a populous, low-yield
+            // subtree monopolize the frontier. Estimates never credit bytes.
+            let depth = work.depth.min(DEPTH_BUCKET_COUNT - 1);
+            self.low_depths[depth].push(work);
+            self.low_occupied |= 1 << depth;
+            self.len += 1;
+            return;
+        }
         let index = usize::from(priority);
         if preserve_order { self.buckets[index].push_front(work); }
         else { self.buckets[index].push_back(work); }
@@ -30,7 +55,22 @@ impl PriorityBuckets {
             if self.buckets[index].is_empty() { self.occupied[word] &= !(1 << bit); }
             return work;
         }
-        None
+        if self.low_occupied == 0 { return None; }
+        let mut ordinal = self.random_index(self.low_occupied.count_ones() as usize);
+        let mut depths = self.low_occupied;
+        while ordinal > 0 { depths &= depths - 1; ordinal -= 1; }
+        let depth = depths.trailing_zeros() as usize;
+        let index = self.random_index(self.low_depths[depth].len());
+        let work = self.low_depths[depth].swap_remove(index);
+        self.len -= 1;
+        if self.low_depths[depth].is_empty() { self.low_occupied &= !(1 << depth); }
+        Some(work)
+    }
+    fn random_index(&mut self, limit: usize) -> usize {
+        self.random ^= self.random << 13;
+        self.random ^= self.random >> 7;
+        self.random ^= self.random << 17;
+        self.random as usize % limit
     }
 }
 
@@ -74,27 +114,31 @@ impl WorkQueue {
     }
 }
 
-pub(super) fn priority(work: &Work, tree: &DirectoryTree) -> Priority {
+pub(super) fn priority(work: &Work, tree: &DirectoryTree, hints: Option<&PathYields>) -> Priority {
     if let WorkKind::Files { bytes_per_file, .. } = &work.kind {
-        // Tiny-file tails stay behind unopened directories.
-        if *bytes_per_file <= 4096 { return 8; }
-        return (16 + (*bytes_per_file).max(1).ilog2().saturating_sub(12)).min(63) as Priority;
+        return yield_priority(*bytes_per_file);
     }
     let depth = tree.nodes[work.node].depth;
     if depth == 0 { return 255; }
     // Establish the three chart levels before pursuing deeper detail.
-    let shallow = if depth <= 3 { 4 - depth } else { 0 };
+    let shallow = if depth <= SHALLOW_LEVELS { SHALLOW_LEVELS + 1 - depth } else { 0 };
     let mut ancestor = tree.nodes[work.node].parent;
-    let mut score = 24;
+    let mut score = yield_priority(UNKNOWN_YIELD_BYTES);
     while ancestor != 0 {
         let node = &tree.nodes[ancestor];
-        // Nearby samples keep a productive subtree from boosting tiny siblings.
-        if node.yield_cost >= 8 {
-            let average = node.yield_bytes / node.yield_cost;
-            score = (16 + average.max(1).ilog2().saturating_sub(12) as usize).min(63);
-            break;
-        }
+        if node.yield_cost >= MIN_OBSERVATION_COST { score = yield_priority(node.yield_bytes / node.yield_cost); break; }
         ancestor = node.parent;
     }
-    (shallow * 64 + score) as Priority
+    if let Some(prediction) = hints.and_then(|hints| hints.prediction(work.node)) { score = yield_priority(prediction); }
+    // A gradual depth penalty lets productive file tails compete with long
+    // runs of directory discovery while preserving measured-yield ordering.
+    let score = score.saturating_sub(depth.saturating_sub(SHALLOW_LEVELS).min(usize::from(MAX_YIELD_PRIORITY)) as u8);
+    (shallow * SHALLOW_PRIORITY_STRIDE + usize::from(score)) as Priority
+}
+
+fn yield_priority(average: u64) -> Priority {
+    let average = average.max(1);
+    let exponent = average.ilog2();
+    let half = u32::from(exponent > 0 && average & (1 << (exponent - 1)) != 0);
+    (exponent * 2 + half).min(u32::from(MAX_YIELD_PRIORITY)) as Priority
 }

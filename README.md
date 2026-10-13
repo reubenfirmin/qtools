@@ -142,7 +142,9 @@ A newly created or enlarged file remains in the unseen allocation until measured
 branches can be deferred and reopened if the global budget still requires their measurements.
 If the final usage check exceeds the budget, the same scan resumes its deferred work without
 remeasuring completed files. If physical aliases or changed metadata invalidate allocation
-accounting, dq discards that attempt before making one complete traversal. Scans do not read
+accounting, dq discards that attempt before making one complete traversal. Mount validation
+tracks the scanned tree and its covering mounts; unrelated mount changes elsewhere do not
+restart the traversal. Scans do not read
 or write a persistent filesystem index.
 
 `--max-error PERCENT` defaults to 3% of **filesystem capacity**, not used space or each
@@ -159,6 +161,12 @@ for the separation between scheduling hints and fresh lower/upper stopping bound
 
 `QTOOLS_PROFILE=1` reports scan time, work counts, and allocation progress. Compare default
 and `--precise` runs under the same filesystem-cache conditions.
+
+First-invocation latency is the primary performance measurement. See
+[developer benchmarking instructions](dev/benchmarking.md) for automatic unprivileged
+cache reclaim, paired comparisons, and profiling. The
+[research tools and experiment ledger](dev/research/README.md) preserve the experiments
+behind the current scheduling policy.
 
     dq [dir]                        # directory tree
     dq --files --top 30 /var         # largest files recursively

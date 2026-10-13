@@ -4,6 +4,7 @@ import hashlib
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import subprocess
@@ -116,6 +117,8 @@ class ReleaseTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "ci.yml failed"):
             release.wait_workflow("ci.yml", "main", "commit")
 
+    @unittest.skipUnless(os.environ.get("QTOOLS_RELEASE_GIT_INTEGRATION") == "1",
+                         "opt-in fixture creates Git commits, tags, and local pushes")
     def test_publish_with_git_pruning_preserves_tags_and_updates_tracking_ref(self):
         with tempfile.TemporaryDirectory() as temporary, contextlib.redirect_stdout(io.StringIO()):
             root, remote = Path(temporary) / "checkout", Path(temporary) / "remote.git"

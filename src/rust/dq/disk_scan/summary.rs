@@ -9,6 +9,7 @@ use super::super::directory_tree::{DirectoryTree, NodeId};
 use super::super::dq_query::{DiskQuery, FileFilters, SizeAccounting};
 use super::super::pruning::{self, Bound};
 use super::scheduling::{priority, WorkQueue};
+use super::path_yield::PathYields;
 use super::traversal::{walk, Batch, CollectFiles, EntryMetadata, WalkEvent, WalkOptions, Work};
 use super::{FileFact, SummaryScan};
 
@@ -24,15 +25,35 @@ impl FileSelection {
 }
 
 #[derive(Clone)]
+struct AllocationHistogram { buckets: [(u64, u64); 8] }
+impl AllocationHistogram {
+    fn new() -> Self { Self { buckets: [(0, 0); 8] } }
+    fn record(&mut self, bytes: u64) {
+        // Zero, <=4 KiB, <=64 KiB, <=1 MiB, <=16 MiB, <=256 MiB,
+        // <=4 GiB, and larger. Counts and sums refer to observed allocations.
+        let bucket = if bytes == 0 { 0 } else if bytes <= 4096 { 1 }
+            else { (1 + (bytes - 1).ilog2().saturating_sub(8) / 4).min(7) as usize };
+        self.buckets[bucket].0 += 1; self.buckets[bucket].1 += bytes;
+    }
+    fn merge(&mut self, other: &Self) {
+        for (target, source) in self.buckets.iter_mut().zip(other.buckets) {
+            target.0 += source.0; target.1 += source.1;
+        }
+    }
+}
+
+#[derive(Clone)]
 struct SummaryFiles {
     selection: FileSelection, bytes: u64, selected: u64, scanned: usize, hard_links: Vec<FileFact>,
     bound_device: Option<u64>, check_file_inodes: bool, bound_bytes: u64, allocations: Vec<(u64, u64)>,
+    profile_allocations: Option<Box<AllocationHistogram>>,
 }
 impl CollectFiles for SummaryFiles {
     fn push(&mut self, path: impl FnOnce() -> PathBuf, metadata: &EntryMetadata) {
         self.scanned += 1;
         // Only multiply-linked inodes need paths and deterministic representatives.
         if metadata.links > 1 { self.hard_links.push(metadata.file_fact(path())); return; }
+        if let Some(histogram) = &mut self.profile_allocations { histogram.record(metadata.allocated); }
         if self.bound_device == Some(metadata.device) {
             if self.check_file_inodes { self.allocations.push((metadata.inode, metadata.allocated)); }
             else { self.bound_bytes += metadata.allocated; }
@@ -54,6 +75,9 @@ struct SummaryState<'a> {
     deferred: Vec<Work>, branch_pruning: bool, invalid: bool,
     previous_remaining: u64, checkpoint_directories: usize, ranked_directories: usize,
     started: Instant, profiling: bool, next_profile: Duration,
+    profile_peak: (u64, PathBuf),
+    profile_allocations: AllocationHistogram,
+    path_yields: Option<PathYields>,
     accounting_time: Duration, scheduling_time: Duration, batches: usize, continuations: usize,
 }
 
@@ -63,18 +87,22 @@ impl<'a> SummaryState<'a> {
         let selection = FileSelection { accounting: query.accounting, filters: query.selection.file_filters(),
             now: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64 };
         let bound_device = bound.as_ref().and_then(|_| fs::metadata(root).ok().map(|item| item.dev()));
+        let path_yields = bound.as_ref().map(|_| PathYields::new());
         Self { root, query, bound, bound_device, selection, tree: DirectoryTree::new(*depths.iter().max().unwrap()), depths,
             links: HashMap::new(), pending_link_bytes: 0, scanned_files: 0, selected_files: 0, directories: 0, duplicate_hard_links: 0,
             deferred: Vec::new(), branch_pruning: true, invalid: false, previous_remaining: u64::MAX,
             checkpoint_directories: 0, ranked_directories: 0, started: Instant::now(),
             profiling: std::env::var_os("QTOOLS_PROFILE").is_some(), next_profile: Duration::from_secs(1),
+            profile_peak: (0, PathBuf::new()),
+            profile_allocations: AllocationHistogram::new(), path_yields,
             accounting_time: Duration::ZERO, scheduling_time: Duration::ZERO, batches: 0, continuations: 0 }
     }
 
     fn collector(&self) -> SummaryFiles {
         SummaryFiles { selection: self.selection, bytes: 0, selected: 0, scanned: 0, hard_links: Vec::new(),
             bound_device: self.bound_device, check_file_inodes: self.bound.as_ref().is_some_and(Bound::check_file_inodes),
-            bound_bytes: 0, allocations: Vec::new() }
+            bound_bytes: 0, allocations: Vec::new(),
+            profile_allocations: self.profiling.then(|| Box::new(AllocationHistogram::new())) }
     }
 
     fn receive(&mut self, event: WalkEvent<SummaryFiles>, queue: &mut WorkQueue) {
@@ -84,11 +112,21 @@ impl<'a> SummaryState<'a> {
             WalkEvent::Idle => { self.resume(queue); return; }
         };
         let accounting_started = self.profiling.then(Instant::now);
+        let measured_before = self.profiling.then(|| self.tree.nodes[0].bytes);
         self.account(&batch);
         self.account_links(batch.files.hard_links, batch.node);
         if let Some(bound) = &mut self.bound {
             bound.account_file_bytes(batch.files.bound_bytes);
             for (inode, bytes) in batch.files.allocations { bound.record(inode, bytes); }
+        }
+        if self.bound.is_some() {
+            let cost = batch.files.scanned as u64 + if batch.directory_visit { 2 + batch.subdirs.len() as u64 } else { 1 };
+            self.tree.observe_yield(batch.node, batch.scanned, cost);
+            if let Some(hints) = &mut self.path_yields { hints.observe(batch.node, batch.scanned, cost, &self.tree); }
+        }
+        if let Some(before) = measured_before {
+            let gain = self.tree.nodes[0].bytes.saturating_sub(before);
+            if gain > self.profile_peak.0 { self.profile_peak = (gain, batch.directory.path.clone()); }
         }
         if let Some(started) = accounting_started { self.accounting_time += started.elapsed(); }
         let scheduling_started = self.profiling.then(Instant::now);
@@ -101,10 +139,7 @@ impl<'a> SummaryState<'a> {
         self.batches += 1; self.continuations += usize::from(!batch.directory_visit);
         self.directories += usize::from(batch.directory_visit);
         self.scanned_files += batch.files.scanned; self.selected_files += batch.files.selected as usize;
-        if self.bound.is_some() {
-            self.tree.observe_yield(batch.node, batch.scanned, batch.files.scanned as u64
-                + if batch.directory_visit { 2 + batch.subdirs.len() as u64 } else { 1 });
-        }
+        if let Some(histogram) = &batch.files.profile_allocations { self.profile_allocations.merge(histogram); }
         if batch.directory_visit {
             let directory_metadata = !self.query.selection.has_file_filters();
             let new_metadata = !self.tree.nodes[batch.node].metadata_counted;
@@ -125,6 +160,7 @@ impl<'a> SummaryState<'a> {
         for fact in facts {
             let group = match self.links.entry((fact.device, fact.inode)) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
+                    if self.profiling { self.profile_allocations.record(fact.allocated); }
                     if self.bound_device == Some(fact.device) {
                         if let Some(bound) = &mut self.bound { bound.record(fact.inode, fact.allocated); }
                         self.pending_link_bytes += fact.allocated;
@@ -135,7 +171,7 @@ impl<'a> SummaryState<'a> {
                     self.duplicate_hard_links += 1;
                     entry.get_mut().observed += 1;
                     if (fact.allocated, fact.links) != (entry.get().fact.allocated, entry.get().fact.links) {
-                        if let Some(bound) = &mut self.bound { bound.invalidate(); }
+                        if let Some(bound) = &mut self.bound { bound.invalidate("hard-link size or link count changed"); }
                     }
                     if fact.path.as_os_str() < entry.get().fact.path.as_os_str() {
                         entry.get_mut().fact = fact; entry.get_mut().directory = node;
@@ -144,7 +180,7 @@ impl<'a> SummaryState<'a> {
                 }
             };
             if let Some(bound) = &mut self.bound {
-                if group.observed > group.fact.links && group.finalized { bound.invalidate(); }
+                if group.observed > group.fact.links && group.finalized { bound.invalidate("more hard links observed than reported"); }
                 else if bound.can_settle_links() && group.observed == group.fact.links && !group.finalized {
                     // Until all links are seen, an earlier path can change attribution.
                     if self.bound_device == Some(group.fact.device) {
@@ -172,6 +208,10 @@ impl<'a> SummaryState<'a> {
                 work.path.strip_prefix(self.root).unwrap_or(&work.path)
             } else { Path::new("") };
             work.node = self.tree.add_child(node, relative);
+            if let Some(hints) = &mut self.path_yields {
+                hints.add_node(work.node, Some(node), work.path.file_name().unwrap_or_default());
+            }
+            work.depth = self.tree.nodes[work.node].depth;
             if let (Some(bound), Some(metadata)) = (&mut self.bound, work.metadata()) {
                 // A child with fresh metadata can be credited before opening it.
                 bound.record(metadata.inode, metadata.allocated);
@@ -183,13 +223,14 @@ impl<'a> SummaryState<'a> {
         }
         if child_metadata_bytes > 0 { self.tree.add_descendant_usage(node, child_metadata_bytes, 0); }
         for mut work in continuations {
-            work.node = node; self.enqueue(work, parent_closed, queue);
+            work.node = node; work.depth = self.tree.nodes[node].depth;
+            self.enqueue(work, parent_closed, queue);
         }
     }
 
     fn enqueue(&mut self, work: Work, closed: bool, queue: &mut WorkQueue) {
         if closed { self.deferred.push(work); }
-        else { let rank = if queue.adaptive() { priority(&work, &self.tree) } else { 0 }; queue.push_ranked(work, rank); }
+        else { let rank = if queue.adaptive() { priority(&work, &self.tree, self.path_yields.as_ref()) } else { 0 }; queue.push_ranked(work, rank); }
     }
 
     fn invalidate(&mut self, queue: &mut WorkQueue) {
@@ -202,6 +243,9 @@ impl<'a> SummaryState<'a> {
             eprintln!("dq[profile]: elapsed={}ms files={} directories={} measured={} remaining={:?} pending-links={} queued={}",
                 self.started.elapsed().as_millis(), self.scanned_files, self.directories, self.tree.nodes[0].bytes,
                 self.bound.as_ref().and_then(Bound::remaining), self.pending_link_bytes, queue.len());
+            eprintln!("dq[profile]: largest-batch-bytes={} path={}", self.profile_peak.0, self.profile_peak.1.display());
+            eprintln!("dq[profile]: file-allocation-buckets={:?}", self.profile_allocations.buckets);
+            self.profile_peak = (0, PathBuf::new());
             self.next_profile = self.started.elapsed() + Duration::from_secs(1);
         }
         let Some(bound) = &mut self.bound else { return; };
@@ -221,6 +265,10 @@ impl<'a> SummaryState<'a> {
         let mut changed = false;
         if remaining.saturating_add(self.pending_link_bytes) as f64 <= stop_at {
             changed = !self.tree.is_closed(0); self.tree.close(0);
+            if changed && std::env::var_os("QTOOLS_DEBUG").is_some() {
+                eprintln!("dq[debug]: certificate-stop={}ms files={} directories={} queued={}",
+                    self.started.elapsed().as_millis(), self.scanned_files, self.directories, queue.len());
+            }
         } else if self.branch_pruning {
             for id in pruning::closed_branches(&self.tree, self.query, remaining.saturating_add(self.pending_link_bytes)) {
                 changed |= !self.tree.is_closed(id); self.tree.close(id);
@@ -229,7 +277,7 @@ impl<'a> SummaryState<'a> {
         if changed || tightened || ranking_due {
             queue.update(|work| {
                 if self.tree.is_closed(work.node) { self.deferred.push(work); None }
-                else { let rank = priority(&work, &self.tree); Some((work, rank)) }
+                else { let rank = priority(&work, &self.tree, self.path_yields.as_ref()); Some((work, rank)) }
             });
             self.ranked_directories = self.directories;
         }
@@ -245,7 +293,7 @@ impl<'a> SummaryState<'a> {
         // untouched work re-enters the queue; the worker pool remains live.
         self.tree.reopen(); self.branch_pruning = false;
         for work in self.deferred.drain(..) {
-            let rank = priority(&work, &self.tree); queue.push_ranked(work, rank);
+            let rank = priority(&work, &self.tree, self.path_yields.as_ref()); queue.push_ranked(work, rank);
         }
     }
 
@@ -264,6 +312,7 @@ impl<'a> SummaryState<'a> {
         let levels = self.tree.levels(&self.depths).into_iter().map(|groups|
             groups.into_iter().map(|(relative, usage)| (self.root.join(relative), usage)).collect()).collect();
         if let Some(started) = finalization_started {
+            eprintln!("dq[profile]: file-allocation-buckets={:?}", self.profile_allocations.buckets);
             eprintln!("dq[profile]: accounting={}ms scheduling={}ms", self.accounting_time.as_millis(), self.scheduling_time.as_millis());
             eprintln!("dq[profile]: batches={} continuations={}", self.batches, self.continuations);
             eprintln!("dq[profile]: finalization={}ms hard-link-groups={link_groups}", started.elapsed().as_millis());

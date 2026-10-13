@@ -73,7 +73,7 @@ dq scanning
   --cross-filesystems       Traverse mounted filesystems too
   --precise                 Scan every file (may take longer)
   --max-error PERCENT       Space left unaccounted for (% of disk capacity; default 3)
-  -t, --threads N           Scan threads (default 50)
+  -t, --threads N           Scan threads (default 32)
   --noprogress              Disable progress
 
 Reading every file can be slow. For a quick overview, dq can stop with a small amount of

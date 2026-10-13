@@ -31,6 +31,7 @@ jobs:
         with:
           tool: cargo-audit,cargo-llvm-cov
       - run: cargo test --locked --all-targets
+      - run: python3 -B -m unittest discover -s tests -p 'test_*.py'
       - run: cargo llvm-cov --locked --all-targets --fail-under-lines 95
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo audit

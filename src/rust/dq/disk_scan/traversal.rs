@@ -13,15 +13,28 @@ use super::super::progress::Progress;
 use super::scheduling::WorkQueue;
 use super::{DirectoryFact, FileFact};
 
-pub(super) struct Work { pub path: PathBuf, pub node: NodeId, pub kind: WorkKind }
+// Small adaptive jobs return scheduling feedback sooner; two jobs per worker
+// keep metadata reads outstanding while the coordinator processes results.
+const ADAPTIVE_ITEMS_PER_JOB: usize = 8;
+const PRECISE_ITEMS_PER_JOB: usize = 16;
+const JOBS_PER_THREAD: usize = 2;
+const PILOT_FILES: usize = 8;
+// Complete modest leaves during their first open. Branching directories keep
+// short tiny-file chunks so their newly discovered children can run promptly.
+const SMALL_LEAF_FILES: usize = 32;
+const SMALL_FILE_BYTES: u64 = 4096;
+const BRANCH_FILE_CHUNK: usize = 32;
+const LEAF_FILE_CHUNK: usize = 256;
+
+pub(super) struct Work { pub path: PathBuf, pub node: NodeId, pub depth: usize, pub kind: WorkKind }
 pub(super) enum WorkKind {
     Directory(Option<EntryMetadata>),
-    Files { metadata: EntryMetadata, pending: PendingFiles, bytes_per_file: u64 },
+    Files { metadata: EntryMetadata, pending: PendingFiles, bytes_per_file: u64, has_subdirs: bool },
 }
 
 impl Work {
     pub fn directory(path: PathBuf, metadata: Option<EntryMetadata>) -> Self {
-        Self { path, node: 0, kind: WorkKind::Directory(metadata) }
+        Self { path, node: 0, depth: 0, kind: WorkKind::Directory(metadata) }
     }
     pub fn metadata(&self) -> Option<&EntryMetadata> {
         match &self.kind { WorkKind::Directory(metadata) => metadata.as_ref(), WorkKind::Files { metadata, .. } => Some(metadata) }
@@ -102,9 +115,9 @@ impl PendingFiles {
         }
         measured
     }
-    fn sample(&mut self, ends: &[usize], mut visit: impl FnMut(&CStr)) -> u64 {
+    fn sample(&mut self, ends: &[usize], limit: usize, mut visit: impl FnMut(&CStr)) -> u64 {
         let count = ends.len();
-        let samples = count.min(8);
+        let samples = count.min(limit);
         let (mut next_sample, mut start, mut kept) = (0, 0, 0);
         for (index, &end) in ends.iter().enumerate() {
             let selected = if samples == 1 { 0 } else { next_sample * (count - 1) / (samples - 1) };
@@ -124,7 +137,7 @@ impl PendingFiles {
 
 pub(super) fn walk<C: CollectFiles>(root: &Path, options: WalkOptions<'_>, collector: C,
     mut receive: impl FnMut(WalkEvent<C>, &mut WorkQueue)) -> (Vec<String>, u128) {
-    let directories_per_job = if options.adaptive { 8 } else { 16 };
+    let directories_per_job = if options.adaptive { ADAPTIVE_ITEMS_PER_JOB } else { PRECISE_ITEMS_PER_JOB };
     let started = std::time::Instant::now();
     let root_device = fs::metadata(root).map(|metadata| metadata.dev()).unwrap_or(0);
     let pool = ThreadPool::new(options.threads); let (tx, rx) = std::sync::mpsc::channel();
@@ -146,7 +159,7 @@ pub(super) fn walk<C: CollectFiles>(root: &Path, options: WalkOptions<'_>, colle
             if queue.is_empty() { break; }
         }
         let dispatch_started = profiling.then(std::time::Instant::now);
-        while in_flight < options.threads.saturating_mul(2) {
+        while in_flight < options.threads.saturating_mul(JOBS_PER_THREAD) {
             let Some(directory) = queue.pop_front() else { break };
             let mut directories = vec![directory];
             for _ in 1..directories_per_job {
@@ -254,22 +267,26 @@ fn read_directory_deferred<C: CollectFiles>(directory: &Path, kind: WorkKind, op
         }
         _ => match &kind { WorkKind::Directory(metadata) => metadata.unwrap(), WorkKind::Files { metadata, .. } => *metadata },
     };
-    let (pending, measured_files) = match kind {
-        WorkKind::Files { mut pending, bytes_per_file, .. } => {
-            // Short tiny-file chunks let unopened branches produce samples.
-            let chunk = if bytes_per_file <= 4096 { 32 } else { 256 };
+    let (pending, measured_files, has_subdirs) = match kind {
+        WorkKind::Files { mut pending, bytes_per_file, has_subdirs, .. } => {
+            // Keep branching directories responsive; leaf tails reveal only files.
+            let chunk = if bytes_per_file <= SMALL_FILE_BYTES && has_subdirs { BRANCH_FILE_CHUNK } else { LEAF_FILE_CHUNK };
             let measured = pending.measure(chunk, |name| collect_native(directory, &file, name, options, &mut batch));
-            (pending, measured)
+            (pending, measured, has_subdirs)
         }
         WorkKind::Directory(_) => {
             let (mut pending, ends) = list_directory(directory, &file, options, &mut batch);
-            let measured = pending.sample(&ends, |name| collect_native(directory, &file, name, options, &mut batch));
-            (pending, measured)
+            let has_subdirs = !batch.subdirs.is_empty();
+            // Finish small leaves while their listing and inode neighborhood
+            // are hot, instead of reopening them for a few deferred names.
+            let limit = if !has_subdirs && ends.len() <= SMALL_LEAF_FILES { SMALL_LEAF_FILES } else { PILOT_FILES };
+            let measured = pending.sample(&ends, limit, |name| collect_native(directory, &file, name, options, &mut batch));
+            (pending, measured, has_subdirs)
         }
     };
     if !pending.bytes.is_empty() {
-        batch.continuations.push(Work { path: directory.to_path_buf(), node: batch.node,
-            kind: WorkKind::Files { metadata, pending, bytes_per_file: batch.scanned.checked_div(measured_files).unwrap_or(0) } });
+        batch.continuations.push(Work { path: directory.to_path_buf(), node: batch.node, depth: 0,
+            kind: WorkKind::Files { metadata, pending, bytes_per_file: batch.scanned.checked_div(measured_files).unwrap_or(0), has_subdirs } });
     }
     batch
 }

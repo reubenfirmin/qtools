@@ -46,11 +46,10 @@ pub(crate) struct Args {
     #[arg(default_value = ".", value_hint = ValueHint::DirPath)] pub(super) dir: String,
 }
 
-fn default_threads() -> i32 {
-    // Metadata reads wait on filesystem I/O. Keep the original concurrency
-    // rather than limiting outstanding reads to the available CPU count.
-    50
-}
+// Metadata concurrency is independent of CPU count. Users can override this
+// compromise between outstanding reads and worker overhead with --threads.
+const DEFAULT_SCAN_THREADS: i32 = 32;
+fn default_threads() -> i32 { DEFAULT_SCAN_THREADS }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub(crate) enum CompletionShell { Bash, Elvish, Fish, PowerShell, Zsh }

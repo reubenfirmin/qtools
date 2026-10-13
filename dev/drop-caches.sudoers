@@ -1,0 +1,4 @@
+# Install the helper root:root, mode 0555, in a directory writable only by root.
+# The empty argument string permits this command only with no arguments.
+# Replace BENCHMARK_USER with the account that will operate the helper.
+BENCHMARK_USER ALL=(root) NOPASSWD: NOSETENV: /usr/local/sbin/qtools-drop-caches ""

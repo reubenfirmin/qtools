@@ -1,0 +1,532 @@
+{
+  "date": "2026-10-13",
+  "objective": "A significant verified first-invocation improvement for dq /expanse; about 3 seconds remains the longer-term target",
+  "achieved": false,
+  "release_verification": {
+    "summary": "dev/research/release-readiness.md",
+    "report": ".dq-research-archive/2026-10-13/release-benchmark.json",
+    "release_sha256": "396e60dbb6f675c395d30f60f4f8d141b4c0a807c680f42ac4f0a1e44ccb48e4",
+    "baseline_sha256": "de0357c1421245651cb49b94ebeb688fa429854e5255f58566b4f4dc687196be",
+    "release_wall_s": [20.268181881998316, 17.621080739991157, 17.744137355999555],
+    "baseline_wall_s": [19.628357438006788, 19.597718232005718, 19.503347552003106],
+    "median_latency_reduction_percent": 9.458146372259879,
+    "median_directory_reduction_percent": 25.675347616784784,
+    "median_input_block_reduction_percent": 13.915658822781863,
+    "limit": "All first/repeat results retained. The first release invocation was slower than the first baseline invocation. Reclaimed cache state is not a global cold-cache guarantee."
+  },
+  "archive": {
+    "directory": ".dq-research-archive/2026-10-13",
+    "manifest": "manifest.json",
+    "note": "Local ignored evidence archive; historical /tmp paths remain in the original reports. The manifest maps preserved files to their original paths and SHA-256 hashes. Research tools are in dev/research; timing harness remains dev/bench-dq.py."
+  },
+  "measurement": {
+    "command": "python3 dev/bench-dq.py /expanse --binary before=/tmp/IMMUTABLE_BEFORE --paired-binary after=/tmp/IMMUTABLE_AFTER --reclaim-cache --isolated-reclaim --wait-for-idle-io --runs 3 --output /tmp/REPORT.json",
+    "cache_label": "reclaimed",
+    "method": "Unprivileged containing-slice bootstrap, followed by file/slab reclaim in a persistent ordinary-user-owned benchmark cgroup before every invocation; swappiness=0 and all first results retained",
+    "limitations": "Other cgroups' cache charges and actively mapped pages cannot be evicted this way. Device behavior and competing I/O can still change latency.",
+    "comparison": "Keep every first/repeat/outlier result and interleave candidates with an unchanged reference, reversing order each round. Compare work and physical reads alongside wall time.",
+    "idle_preparation": "Optional automatic wait for three consecutive one-second intervals with at most 1 MiB read, 1 MiB written and 100 ms device busy time per interval. Every interval is retained; unavailable counters or a 120-second timeout refuse preparation without running a scan. This does not prevent activity from resuming during a scan.",
+    "privileged_commands_run_by_agent": false
+  },
+  "primary_sources": [
+    {
+      "title": "Levin Tree Search with Context Models",
+      "url": "https://www.ijcai.org/proceedings/2023/0624.pdf",
+      "idea": "Context models can combine broad and specific views to guide tree exploration; search effort can depend on action probabilities rather than raw depth alone.",
+      "limit": "The paper optimizes a product-of-experts action policy from solved trajectories for a single-goal search problem. dq has unknown cumulative allocation and no supplied trajectories. The compressed-depth experiments are not LTS or a reproduction of its optimization."
+    },
+    {
+      "title": "Next.js CI Build Caching",
+      "url": "https://nextjs.org/docs/pages/guides/ci-build-caching",
+      "idea": "A documented standard cache location can supply a generic exploration prior before its allocation is measured.",
+      "limit": "The documentation establishes .next/cache as a cache location, not the presence or size of any cache in a particular filesystem. A name-based prior must never enter the allocation certificate."
+    },
+    {
+      "title": "Dynamic-Depth Context Tree Weighting",
+      "url": "https://papers.neurips.cc/paper/6925-dynamic-depth-context-tree-weighting.pdf",
+      "idea": "Distinguish useful longer contexts from sparse or noisy ones; account for aliases and evidence when expanding contextual distinctions.",
+      "limit": "The paper learns stationary symbol distributions with likelihood-weighted models and a bounded dynamic suffix tree. Our longer-name-context and support-threshold experiments use empirical allocation hints, not D2-CTW or its model-selection criterion."
+    },
+    {
+      "title": "Beyond Word N-Grams",
+      "url": "https://arxiv.org/pdf/cmp-lg/9607016",
+      "idea": "Use longer supported suffix contexts and back off to shorter ones when observations are sparse; update the predictor during the current invocation.",
+      "limit": "The paper predicts word distributions with Bayesian mixtures. Directory allocation hints based on empirical path-context yield are a related experiment, not its prediction algorithm or a transferred guarantee."
+    },
+    {
+      "title": "Extreme bandits",
+      "url": "https://proceedings.neurips.cc/paper_files/paper/2014/file/16577b42c2a7b2820435b84f2f5389ff-Paper.pdf",
+      "idea": "A mean can hide sources of occasional large rewards; compare peak and size-biased observations as directory-ordering hints.",
+      "limit": "The paper maximizes a single extreme reward under independent second-order Pareto distributions. dq needs cumulative allocation with dependent directories; the peak heuristics here are not ExtremeHunter and its guarantees do not apply."
+    },
+    {
+      "title": "Reducing Seek Overhead with Application-Directed Prefetching",
+      "url": "https://www.usenix.org/legacy/event/usenix09/tech/full_papers/vandebogart/vandebogart_html/index.html",
+      "idea": "A large bounded request window can expose physical locality that a very small batch misses.",
+      "limit": "The paper's HDD prefetching and kernel modifications differ from dq on SATA SSD. An ordinary-user directory-only diagnostic included descriptor opening and FIEMAP costs and found an 8192-directory physical-order window slower than native order.",
+      "experiments": ["isolated-directory-io-physical8192-first"]
+    },
+    {
+      "title": "Git repository layout",
+      "url": "https://git-scm.com/docs/gitrepository-layout",
+      "idea": "Git consolidates stored objects in objects/pack; names may guide exploration without assuming any allocation.",
+      "limit": "The documented format does not establish that a particular pack exists or is large. The offline scheduling prior saved less than one percent of modeled work.",
+      "experiments": ["offline-git-pack-prior"]
+    },
+    {
+      "title": "Count-based Novelty Exploration in Classical Planning",
+      "url": "https://arxiv.org/pdf/2408.13719",
+      "idea": "Features seen infrequently can guide exploration alongside a reward heuristic, reducing repeated exploration of familiar regions.",
+      "limit": "Its known planning states, Hamming-distance analysis and single-goal objective differ from cumulative certified filesystem allocation. Directory-name counts are an experimental scheduling feature. No frontier work is discarded on the basis of novelty.",
+      "experiments": ["offline-name-novelty"]
+    },
+    {
+      "title": "Adaptive File Transfers for Diverse Environments",
+      "url": "https://www.usenix.org/legacy/events/usenix08/tech/full_papers/pucha/pucha_html/index.html",
+      "idea": "Group metadata operations and account for opportunities that directory discovery unlocks. Test whether finishing modest leaf directories avoids repeated opens and fragmented metadata dispatch.",
+      "limit": "Its file-transfer objective and network/storage environment differ from dq's certified physical-allocation coverage. Increasing leaf completion is a related experiment, not a reproduction of its policy.",
+      "experiments": ["offline-leaf-size"]
+    },
+    {
+      "title": "Linux BFQ request-depth limiting and burst detection implementation",
+      "url": "https://github.com/torvalds/linux/blob/master/block/bfq-iosched.c",
+      "idea": "bfqq_request_over_limit apportions request tags among queues and ancestor groups; bfq_limit_depth can restrict a queue to one tag. Burst detection also changes weight raising and device idling for parallel applications.",
+      "limit": "Own-worker wait samples establish waits in blk_mq_get_tag, but do not establish which BFQ branch caused them. No host scheduler setting was changed. Reducing workers to eight regressed latency.",
+      "experiments": ["isolated-io-timeline-first", "isolated-worker8-tag-diagnostic"]
+    },
+    {
+      "title": "Does Linux Provide Performance Isolation for NVMe SSDs? Configuring cgroups for I/O Control in the NVMe Era",
+      "url": "https://atlarge-research.com/pdfs/2025-iiswc-cgroups.pdf",
+      "idea": "Read inherited cgroup I/O policies and measure request parallelism when throughput changes. BFQ idling and cgroup policies can affect throughput stability.",
+      "limit": "The paper uses direct fio I/O on NVMe with Linux 6.9, unlike this SATA metadata scan. io.latency is empty throughout our cgroup ancestry, and CPU and memory event counters do not explain the observed slow pair."
+    },
+    {
+      "title": "BFQ, Multiqueue-Deadline, or Kyber? Performance Characterization of Linux Storage Schedulers in the NVMe Era",
+      "url": "https://atlarge-research.com/pdfs/2024-io-schedulers.pdf",
+      "idea": "Jointly evaluate task count, queue depth, throughput and CPU cost rather than assuming more concurrency always improves I/O.",
+      "limit": "Its direct-I/O NVMe results do not predict metadata-scan latency on this device.",
+      "experiments": ["isolated-worker8-tag-diagnostic"]
+    },
+    {
+      "title": "Understanding and taming SSD read performance variability: HDFS case study",
+      "url": "https://arxiv.org/html/1903.09347",
+      "idea": "Compare request parallelism as well as read volume and elapsed time; apparently equivalent cold runs can enter different storage throughput regimes.",
+      "limit": "The paper studies large sequential HDFS reads on different SSDs. Its measured firmware and extent slowdowns are not established causes of dq's observed serialization.",
+      "experiments": ["isolated-random-depth16-confirmation"]
+    },
+    {
+      "title": "A Five-Year Study of File-System Metadata",
+      "url": "https://www.usenix.org/legacy/events/fast07/tech/full_papers/agrawal/agrawal_html/",
+      "idea": "Filename extensions correlate with file-size distributions; freshly learned type statistics may help order metadata reads.",
+      "limit": "The study covers Windows desktops and apparent file sizes, whereas dq needs fresh allocated-byte observations on this Linux filesystem. Current-invocation suffix learning did not reduce directory discovery in the offline trace model.",
+      "experiments": ["offline-suffix-learning", "suffix-groups", "file-allocation-histogram"]
+    },
+    {
+      "title": "Tiebreaking Strategies for A* Search: How to Explore the Final Frontier",
+      "url": "https://ojs.aaai.org/index.php/AAAI/article/download/10071/9930",
+      "idea": "When many frontier nodes share a heuristic value, traversal depth and ordering can dominate discovery time. Preserve or explicitly handle plateau-depth distinctions instead of relying on accidental LIFO order.",
+      "limit": "The paper studies A* planning with zero-cost actions and favors randomized plateau depth in its tested domains. dq's cumulative allocation objective is different; signed depth ranks are a related heuristic, not a reproduction or a transferred performance guarantee.",
+      "experiments": ["offline-signed-depth", "offline-random-depth"]
+    },
+    {
+      "title": "Multi-Heuristic A*",
+      "url": "https://ai.dmi.unibas.ch/research/reading_group/aine-et-al-rss2014.pdf",
+      "idea": "Independent queue orderings can escape regions where a single heuristic correlates poorly with useful discoveries; shared states prevent repeated expansion.",
+      "limit": "The tested breadth/yield alternation is not MHA*: there is no supplied consistent path-to-go heuristic, and cumulative allocation coverage differs from its bounded-suboptimal single-goal search.",
+      "experiments": ["isolated-explore8-first", "offline-branch-exploration"]
+    },
+    {
+      "title": "Just-In-Time Analytics on Large File Systems",
+      "url": "https://www.usenix.org/event/fast11/tech/full_papers/Huang.pdf",
+      "idea": "Adaptive crawling and random descents can expose valuable allocations without exhausting each subtree.",
+      "limit": "Its sampled estimates and confidence measures do not replace dq's deterministic unresolved-allocation certificate.",
+      "experiments": ["descent-probes", "suffix-groups"]
+    },
+    {
+      "title": "A Tight Bound for Stochastic Submodular Cover",
+      "url": "https://arxiv.org/html/2102.01149v2",
+      "idea": "Choose expected marginal coverage per cost while searching until a coverage target is reached.",
+      "limit": "The analyzed problem assumes known independent item distributions; filesystem hierarchy and hard-link attribution do not satisfy those assumptions.",
+      "experiments": ["marginal-yield", "directory-block-cost", "fine-unique-cohort-cost4"]
+    },
+    {
+      "title": "Cost Effective Active Search",
+      "url": "https://proceedings.neurips.cc/paper/2019/file/df0e09d6f25a15a815563df9827f48fa-Paper.pdf",
+      "idea": "Minimize the work remaining to reach a fixed discovery target, considering information revealed by a query as well as its immediate reward.",
+      "limit": "Its policy needs a predictive posterior model. No theorem here establishes dq's achievable first-run latency.",
+      "experiments": ["name-yield", "offline-allocation-study"]
+    },
+    {
+      "title": "Efficient Nonmyopic Active Search",
+      "url": "https://proceedings.mlr.press/v70/jiang17d.html",
+      "idea": "Adapt exploration to the remaining objective rather than using only immediate reward.",
+      "limit": "The model and objective differ from discovering an unknown filesystem and certifying unresolved physical allocation."
+    },
+    {
+      "title": "Efficient Nonmyopic Batch Active Search",
+      "url": "https://proceedings.neurips.cc/paper_files/paper/2018/file/a7aeed74714116f3b292a982238f83d2-Paper.pdf",
+      "idea": "Batching sacrifices adaptivity; fresh feedback may change the value of later queries.",
+      "limit": "Reducing dq to one directory per job already failed to improve measured latency; batch-size changes need both work and I/O evidence."
+    },
+    {
+      "title": "Bandit Algorithms for Tree Search",
+      "url": "https://arxiv.org/abs/1408.2028",
+      "idea": "Tree averages can mislead search toward locally attractive branches and delay useful deep descendants.",
+      "limit": "The paper's sampling and smoothness assumptions do not provide valid filesystem allocation bounds."
+    },
+    {
+      "title": "Optimistic Optimization of a Deterministic Function without the Knowledge of its Smoothness",
+      "url": "https://papers.neurips.cc/paper_files/paper/2011/file/7e889fb76e0e07c11733550f2a6c7a5a-Paper.pdf",
+      "idea": "Explore at several depths instead of relying on one locally estimated mean.",
+      "limit": "Function maximization and smoothness assumptions differ from cumulative filesystem allocation discovery.",
+      "experiments": ["depth-exploration"]
+    },
+    {
+      "title": "Pandora's Box Problem with Order Constraints",
+      "url": "https://arxiv.org/html/2002.06968v2",
+      "idea": "A node's search value includes opportunities unlocked in descendants, not only its own immediate reward. Tree-aware reservation values can be computed under the paper's model.",
+      "limit": "Known reward distributions and the maximum-single-reward objective differ from dq's unknown tree and cumulative allocation target. Excluding parent-local files from an inherited score is a heuristic, not this paper's optimal policy.",
+      "experiments": ["descendant-evidence"]
+    },
+    {
+      "title": "Markovian Pandora's box",
+      "url": "https://arxiv.org/html/2502.00228v1",
+      "idea": "Parent-child reward correlations can require fully adaptive search, with structured solutions for forests.",
+      "limit": "The model requires known transition distributions, conditional independence along paths, and fixed costs. None has been established for dq; it maximizes a single reward minus costs rather than certifying total allocation."
+    },
+    {
+      "title": "Exact and approximation algorithms for the expanding search problem",
+      "url": "https://arxiv.org/pdf/1911.08959",
+      "idea": "Search dense groups of vertices while including the prerequisite work needed to reach them; local vertex density can miss valuable descendants behind low-reward ancestors.",
+      "limit": "The graph, target-location probabilities, and edge costs are known. Expected latency to a single hidden target differs from dq's physical-allocation coverage target; the optimality and approximation claims do not transfer.",
+      "experiments": ["offline-allocation-study", "descendant-evidence"]
+    },
+    {
+      "title": "Improving File Tree Traversal Performance by Scheduling I/O Operations in User Space",
+      "url": "https://www.researchgate.net/publication/220780963_Improving_File_Tree_Traversal_Performance_by_Scheduling_IO_Operations_in_User_space",
+      "idea": "Metadata access order should account for storage locality rather than treating every stat as an independent fixed-cost query.",
+      "limit": "The evaluated global inode/block ordering on mechanical disks differs from dq's parallel traversal on SATA SSD. Full text was read from the author-uploaded publication after the original PDF host failed.",
+      "experiments": ["file-inode-order", "inode-locality-samples", "priority-inode-cscan"]
+    },
+    {
+      "title": "Ext4 inode layout and allocation policy",
+      "url": "https://kernel.org/doc/html/latest/filesystems/ext4/inodes.html",
+      "related_url": "https://docs.kernel.org/filesystems/ext4/allocators.html",
+      "idea": "Inodes form linear tables in block groups; allocation often keeps related metadata together. getdents inode numbers can provide cheap locality hints.",
+      "limit": "Inode size and allocation locality vary. Hints may order metadata reads but every credited allocation must still come from fresh authoritative metadata.",
+      "experiments": ["inode-neighborhood-yield", "inode-locality-samples", "offline-directory-inode-yield"]
+    },
+    {
+      "title": "Estimating the Size of Search Trees by Sampling with Domain Knowledge",
+      "url": "https://researchmgt.monash.edu/ws/portalfiles/portal/247189673/233278248_oa.pdf",
+      "idea": "Importance sampling needs informative structural knowledge; uniform descents can have high variance on unbalanced trees.",
+      "limit": "Its domain-specific branch-and-bound models are not available for filesystem allocation. Unbiased estimates do not certify a maximum missed allocation.",
+      "experiments": ["offline-allocation-study"]
+    },
+    {
+      "title": "Generating Realistic Impressions for File-System Benchmarking",
+      "url": "https://www.usenix.org/legacy/event/fast09/tech/full_papers/agrawal/agrawal_html/index.html",
+      "idea": "Tree shape and allocation correlations should be preserved when studying filesystem behavior.",
+      "limit": "Offline work counts from a recorded snapshot cannot establish live first-run wall time.",
+      "experiments": ["offline-allocation-study"]
+    },
+    {
+      "title": "Optimal Aggregation Algorithms for Middleware",
+      "url": "https://www.cs.ubc.ca/~laks/cpsc504/fagin-jcss03.pdf",
+      "idea": "Separate scheduling hints from lower/upper bounds used to stop.",
+      "limit": "Filesystem entries are not sorted by allocation, so threshold-aggregation optimality results do not apply directly."
+    },
+    {
+      "title": "Analyzing I/O Amplification in Linux File Systems",
+      "url": "https://arxiv.org/abs/1707.08514",
+      "idea": "Metadata work can create more physical I/O than application operation counts suggest.",
+      "limit": "Its operation-specific amplification factors must not be applied to dq's stat workload without measurement."
+    },
+    {
+      "title": "Understanding and taming SSD read performance variability: HDFS case study",
+      "url": "https://arxiv.org/abs/1903.09347",
+      "idea": "Storage behavior can vary independently of the application, reinforcing the need for unchanged controls and device counters.",
+      "limit": "The paper's studied slowdowns do not explain or prove the cause of the much larger latency mode changes seen here."
+    },
+    {
+      "title": "Linux BFQ I/O scheduler documentation",
+      "url": "https://docs.kernel.org/block/bfq-iosched.html",
+      "idea": "Scheduler idling and queue depth can affect throughput on parallel storage.",
+      "limit": "Device-counter changes suggested a diagnostic, not a proven cause. The rootless idle-I/O-priority trial did not improve latency; no system scheduler settings were changed.",
+      "experiments": ["reference-idle-io"]
+    },
+    {
+      "title": "Hierarchical Shrinkage: Improving the Accuracy and Interpretability of Tree-Based Methods",
+      "url": "https://proceedings.mlr.press/v162/agarwal22b/agarwal22b.pdf",
+      "idea": "Sparse local observations can be regularized using evidence from ancestors.",
+      "limit": "The paper's supervised tree estimator and exact telescoping formula differ from the recursive pseudo-count heuristic tested here. Neither certifies filesystem allocation.",
+      "experiments": ["shrinkage-128"]
+    },
+    {
+      "title": "Counting the Leaves of Trees",
+      "url": "https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=908869",
+      "idea": "Coordinated random tree walks reduce experimental variance relative to independent descents on studied trees.",
+      "limit": "The authors leave polynomial variance bounds open. Unbiased leaf-count estimates cannot replace dq's deterministic physical-allocation certificate."
+    },
+    {
+      "title": "Hierarchical Multi-Armed Bandits for Discovering Hidden Populations",
+      "url": "https://sundaram.cs.illinois.edu/pubs/2019/2019kumar_mab.pdf",
+      "idea": "Use hierarchical feedback to balance exploration and repeated queries in productive regions.",
+      "limit": "Its Beta-distributed binary rewards, known query attributes, and random result pages differ from unknown filesystem allocation and deterministic directory listings."
+    },
+    {
+      "title": "Attribute-Based Prediction of File Properties",
+      "url": "https://www.pdl.cmu.edu/PDL-FTP/ABLE/tr-14-03.pdf",
+      "idea": "Filename attributes can help predict allocation and separate unlike files sharing a directory.",
+      "limit": "ABLE trains decision trees on earlier NFS traces and validates later workloads. The experiment here uses bounded suffix groups and only current-invocation samples; neither predictions nor suffixes certify an allocation bound.",
+      "experiments": ["fine-suffix-continuations", "fine-cohort-cost4", "fine-unique-cohort-cost4", "offline-direct-name-features"]
+    },
+    {
+      "title": "Single-Agent Policy Tree Search with Guarantees",
+      "url": "https://proceedings.neurips.cc/paper/2018/file/52c5189391854c93e8a0e1326e56c14f-Paper.pdf",
+      "idea": "Account for the path required to discover a goal rather than ranking only a node's immediate reward.",
+      "limit": "Levin tree search uses a supplied policy and a single-goal objective. The tested depth penalties are heuristics for cumulative allocation discovery, not reproductions of its search guarantee.",
+      "experiments": ["isolated-depth-penalty-initial", "isolated-depth-penalty-confirmation", "isolated-depth-penalty2"]
+    },
+    {
+      "title": "Policy-Guided Heuristic Search with Guarantees",
+      "url": "https://ojs.aaai.org/index.php/AAAI/article/view/17469/17276",
+      "idea": "Combine path cost, a policy and a heuristic estimate of remaining search effort.",
+      "limit": "The supplied policy and heuristic are not available for an unknown filesystem. Its guarantees do not certify allocation or predict dq latency."
+    },
+    {
+      "title": "Exponential Speedups by Rerooting Levin Tree Search",
+      "url": "https://arxiv.org/html/2412.05196",
+      "idea": "Fresh clues can justify redirecting exploration toward a newly discovered subtree.",
+      "limit": "Known policies, rerooting weights and a single-goal search objective differ from dq's cumulative allocation coverage target."
+    },
+    {
+      "title": "Fast Storage for File System Metadata",
+      "url": "https://www.csd.cmu.edu/sites/default/files/phd-thesis/CMU-CS-17-121.pdf",
+      "idea": "Co-locating directory rows and inode attributes can reduce random metadata reads.",
+      "limit": "TableFS changes the filesystem metadata format and storage stack; its improvement is not an ordinary-user traversal optimization on an existing ext4 filesystem."
+    },
+    {
+      "title": "A Directory Index for Ext2",
+      "url": "https://www.usenix.org/legacy/publications/library/proceedings/als01/full_papers/phillips/phillips_html/index.html",
+      "idea": "Hash-ordered directory traversal can conflict with inode-table locality; inode ordering can remove cache thrashing in the studied deletion workload.",
+      "limit": "The old memory-constrained Ext2 deletion workload differs from dq's read-only SATA SSD traversal. Inode-ordering experiments here already failed to establish a significant gain.",
+      "experiments": ["file-inode-order", "priority-inode-cscan"]
+    },
+    {
+      "title": "No-Regret Algorithms for Heavy-Tailed Linear Bandits",
+      "url": "https://proceedings.mlr.press/v48/medina16.pdf",
+      "idea": "Robust reward estimators can reduce domination by rare outliers.",
+      "limit": "The paper dynamically increases its truncation threshold under linear finite-moment assumptions. The tested fixed 64 KiB scheduling cap is a biased heuristic, not its estimator or regret guarantee; physical allocation accounting was unchanged.",
+      "experiments": ["isolated-clipped64k-first"]
+    },
+    {
+      "title": "io_uring for High-Performance DBMSs: When and How to Use It",
+      "url": "https://arxiv.org/html/2512.04859v1",
+      "idea": "Batch submission can amortize system calls, but end-to-end gains depend on the operation execution path and architecture.",
+      "limit": "Its database block I/O and networking workloads differ from directory traversal. Linux statx currently forces kernel-worker execution, so its measured DBMS speedups cannot be transferred to dq."
+    },
+    {
+      "title": "Linux io_uring statx implementation",
+      "url": "https://github.com/torvalds/linux/blob/master/io_uring/statx.c",
+      "idea": "Fresh statx requests can be submitted together, with pathname and result buffers retained through completion.",
+      "limit": "The operation forces asynchronous worker execution; it does not provide a cached nonblocking metadata path. Ordinary-user availability and field equivalence were verified separately before performance measurement."
+    },
+    {
+      "title": "pFSCK: Accelerating File System Checking and Repair for Modern Storage",
+      "url": "https://www.usenix.org/conference/fast21/presentation/domingo",
+      "idea": "Separate dependent accounting from parallel metadata work and adjust concurrency to avoid serialized shared structures.",
+      "limit": "Its raw filesystem checker and repair pipeline differ from a read-only ordinary-user directory traversal. The abstract and indexed evaluation were read; no pFSCK speedup is claimed for dq."
+    }
+  ],
+  "observations": {
+    "individual_file_ordering_models": {
+      "capture": "/tmp/dq-file-metadata-trace.jsonl",
+      "reports": ["/tmp/dq-file-trace-ordering-model-controls.json", "/tmp/dq-file-trace-ordering-model-linkjoin.json", "/tmp/dq-file-trace-ordering-model-suffix.json", "/tmp/dq-file-trace-ordering-model-random-depth.json"],
+      "baseline_directories": 405496,
+      "baseline_metadata_work_proxy": 4426819,
+      "suffix8_directories": 405496,
+      "suffix8_metadata_work_proxy": 4426811,
+      "random_depth16_directories": 339975,
+      "random_depth16_metadata_work_proxy": 4029176,
+      "linkjoin_metadata_query_work_proxy": 4257520,
+      "limitations": "Individual allocated-byte facts and native order improve the model, but it still omits branch pruning, parallel dispatch and I/O costs. Namespace hard-link joining is optimistic: canonical metadata validation is charged but not actually compared. No live speedup is established by these counts.",
+      "interpretation": "Suffix learning did not reduce ancestor discovery. Link joining saved about 4% of metadata-query work and was not implemented. Randomized low-priority depth selection is being tested in the live scanner."
+    },
+    "file_allocation_profile": {
+      "report": "/tmp/dq-cgroup-reclaim-allocation-profile.json",
+      "profiled_wall_s": 38.224,
+      "profiled_time_is_not_default_benchmark": true,
+      "observed_unique_files": 2657561,
+      "observed_allocated_bytes": 427518992384,
+      "allocated_bytes_in_files_at_most_1_mib": 83422711808,
+      "interpretation": "This observed small-file allocation exceeds the roughly 19 GB uncertainty budget by over fourfold. Finding only large files is insufficient; this does not prove 3 seconds impossible."
+    },
+    "online_ordering_models": {
+      "reports": ["/tmp/dq-online-ordering-model-costs.json", "/tmp/dq-online-ordering-model-late.json", "/tmp/dq-online-ordering-model-context.json"],
+      "purpose": "Offline comparison of online ordering under explicit simplifying assumptions, not a wall-time prediction or runtime index.",
+      "fine_seed_1_directories": 404893,
+      "cohort_cost4_seed_1_directories": 353346,
+      "parent_name_context_directories": [345743, 352629],
+      "limitations": "Homogeneous direct-file allocation, approximate directory metadata, canonical unique-file counts, sequential dispatch and seeded sibling order omit real file outliers, duplicate-link reads, link settlement and physical I/O.",
+      "interpretation": "Name pooling looked modestly better in this model but the live cohort trial regressed to 27.268s. The model is being used to reject unpromising hypotheses, not to establish a speedup."
+    },
+    "offline_allocation_study": {
+      "snapshot": "/tmp/dq-directory-allocation-snapshot.json",
+      "report": "/tmp/dq-directory-allocation-study.json",
+      "cache_state": "uncontrolled-diagnostic",
+      "directories": 405644,
+      "scanned_files": 3752855,
+      "unique_files": 3436626,
+      "unreadable_entries": 493,
+      "snapshot_allocated_bytes": 435604897792,
+      "filesystem_used_bytes": 448000720896,
+      "target_measured_bytes": 429160940176,
+      "perfect_information_largest_directory_schedule": {"directories": 108633, "unique_files": 2564659},
+      "perfect_information_allocation_per_work_schedule": {"directories": 181072, "unique_files": 2129638},
+      "directories_without_direct_unique_files": 87484,
+      "gib_subtrees_without_direct_unique_files": 54,
+      "immediate_child_allocation_by_parent_direct_file_mean": [
+        {"parent_mean": "no direct unique files", "child_directories": 147659, "child_direct_bytes": 143442857984, "child_unique_files": 1001735},
+        {"parent_mean": "at most 4 KiB", "child_directories": 3612, "child_direct_bytes": 11891261440, "child_unique_files": 19811},
+        {"parent_mean": "over 4 KiB through 64 KiB", "child_directories": 206360, "child_direct_bytes": 85156810752, "child_unique_files": 1900198},
+        {"parent_mean": "over 64 KiB through 1 MiB", "child_directories": 40388, "child_direct_bytes": 44401782784, "child_unique_files": 380075},
+        {"parent_mean": "over 1 MiB", "child_directories": 7624, "child_direct_bytes": 116352425984, "child_unique_files": 134805}
+      ],
+      "parent_mean_note": "Direct allocated bytes include directory metadata and use canonical unique-file attribution. This offline correlation is diagnostic, not a predictive distribution or a live scanner input.",
+      "interpretation": "There is room to reduce directory visits if a useful online predictor can discover the same allocation concentrations. These hypothetical schedules see unopened allocations and do not model link attribution or individual file samples; they are not latency results or optimality proofs."
+    }
+  },
+  "reclaimed_trials": [
+    {"name": "offline-path-operation-costs", "retained": false, "note": "Removing future child discovery from observed cost opened 286756 directories with metadata proxy 3562487. Charging directory visits as eight or 32 work units instead of two opened 313147 and 316068 directories with proxies 3936445 and 3912221. All increased modeled work relative to unchanged path5 (278227 directories, proxy 3554008); no runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-path-operation-costs.json."},
+    {"name": "offline-path-link-attribution", "retained": false, "note": "Namespace inode joining left directory and file-entry selection identical to path5 (278227 directories, metadata selection proxy 3554008). Even an invalid perfect-information diagnostic removing every unresolved attribution stopped at 270692 directories and proxy 3485043, less than two percent proxy reduction. The join model charges canonical validation but does not actually compare canonical metadata; it is not a validated runtime algorithm. No runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-path-link-attribution.json."},
+    {"name": "offline-path-exploration-cache-prior", "retained": false, "note": "With five-component contexts, random-depth exploration through ranks 8 and 24 opened 393247 and 340059 directories with metadata proxies 4466845 and 3682255. A generic 1MiB/work exploration floor below cache, .cache or .next names opened 282638 directories with proxy 3585629. Every policy increased work relative to path5/rank16 (278227 directories, proxy 3554008); no runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-path-exploration-cache-prior.json."},
+    {"name": "isolated-path5-one-flight-first", "wall_s": [27.678, 19.114], "retained": false, "note": "Adaptive dispatch retained one eight-item job per worker instead of two, with precise dispatch unchanged. All 58 dq tests passed. Candidate first opened 281897 directories and read 4406872 input blocks; unchanged two-flight control second opened 281863 and read 4424192 blocks. Selection work was essentially unchanged and first latency regressed; change reverted. Raw report: /tmp/dq-isolated-paired-path5-one-flight-first.json."},
+    {"name": "isolated-path5-morning-confirmation", "wall_s": [21.520, 19.329, 19.301], "note": "Three alternating reclaimed pairs compared path5/default32 against saved morning/default50. Morning took 21.597, 21.965 and 21.685s; candidate median 19.329 versus morning median 21.685 (10.9% lower). Candidate first 21.520 was essentially tied with morning first 21.597, so a strong first-use gain is not established. Candidate opened 283023–289193 directories and read 4432856–4477368 input blocks, versus morning 391168–403717 directories and 5203536–5357944 blocks. Every sample retained. Raw report: /tmp/dq-isolated-paired-path5-morning-confirmation.json."},
+    {"name": "isolated-path5-worker64-first", "wall_s": [20.316, 19.124], "retained": false, "note": "Same immutable path5 binary first with 64 workers, then 32. Worker64 opened 307817 directories, scanned 2951717 files and read 4635608 input blocks; worker32 opened 284552 directories and read 4435040 blocks. More workers increased work and regressed latency; no default change. Raw report: /tmp/dq-isolated-paired-path5-worker64-first.json."},
+    {"name": "offline-path-chain-penalties", "retained": false, "note": "Preserving depth through empty single-child containers opened 291167 directories with metadata proxy 3744660. Penalizing only actual directory branching opened 303109 with proxy 3844367. Both increased modeled work relative to path5 at 278227 directories and proxy 3554008; no runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-path-chain-penalty.json."},
+    {"name": "offline-path-depth-support", "retained": false, "note": "Seven- and nine-component contexts opened 274436 and 270359 directories with metadata proxies 3521295 and 3520686, versus five-component contexts at 278227 directories and proxy 3554008. Requiring 32 work units before using a context opened 290819 directories with proxy 3625907. Lowering support to one work unit opened 273916 directories with proxy 3553430. Savings over path5 were small; no runtime change. Raw reports: /tmp/dq-file-trace-ordering-model-path-depth-support.json and /tmp/dq-file-trace-ordering-model-path-wildcards.json."},
+    {"name": "offline-path-wildcards-peaks", "retained": false, "note": "Single interior-component wildcards let current-invocation contexts share yield across variable project/package names. The model opened 278566 directories with metadata proxy 3519173. Keeping the maximum observed per-node mean rather than pooled context mean opened 278549 directories with proxy 3563722. Neither substantially improved on path5 at 278227 directories and proxy 3554008. No runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-path-wildcards.json."},
+    {"name": "offline-path-rewards", "retained": false, "note": "Five-component contexts rewarded by certificate improvement opened 283109 directories with metadata proxy 3596597; rewarding only newly observed physical allocation opened 329856 with proxy 3941291. Exponentially forgetting context and ancestor observations after 128 work units opened 288980 with proxy 3624518. All were worse than the same trace's raw-reward path5 model (278227 directories, proxy 3554008); no runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-path-rewards.json."},
+    {"name": "offline-path-name-families", "retained": false, "note": "Generic five-component context normalization of numeric runs and long hexadecimal runs opened 278615 directories with metadata proxy 3579716. Normalizing each basename to its first punctuation-delimited stem opened 276345 directories with proxy 3560374; combining both opened 274440 with proxy 3538582. Unnormalized five-component contexts opened 278227 with proxy 3554008. The differences were too small to justify another runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-path-families.json."},
+    {"name": "isolated-path5-start64-first", "wall_s": [28.048], "retained": false, "note": "The path5 prototype dispatched one item per job for its first 64 completed jobs, then restored eight-item jobs. All 58 dq tests passed. Candidate first opened 285490 directories, scanned 2893186 files and read 4438296 input blocks; unchanged path5 reference second took 19.246s. Per-second samples showed the startup candidate spending early intervals near one to two outstanding requests while the reference sustained about forty. The startup change did not prevent serialization and was reverted. Monitoring overhead affected both. Raw report: /tmp/dq-isolated-paired-path5-start64-first.json."},
+    {"name": "isolated-path5-first-and-reverse", "wall_s": [23.555, 19.286], "note": "The five-component current-invocation path-context prototype passed all 58 dq tests. Candidate first opened 287998 directories, scanned 2906693 files, used 41.449 CPU seconds and read 4390432 input blocks; unchanged depth16 reference second took 20.544s, opened 332614 directories and read 4768096 blocks. Reversed order produced a 60.381s reference first with 4814720 blocks and a 19.286s candidate second with 4484992 blocks and 288210 directories. Work reduction is repeatable, but changing I/O parallelism prevents a significant latency claim from these pairs. Prototype remains under investigation. Raw reports: /tmp/dq-isolated-paired-path5-first.json and /tmp/dq-isolated-paired-path5-reverse.json."},
+    {"name": "offline-path-contexts", "retained": false, "note": "Supported directory-name suffixes of up to three or five components pooled only observed current-invocation subtree yield, backing off to shorter contexts. Models opened 283924 and 278227 directories with metadata work proxies 3592812 and 3554008, versus 327344 directories and proxy 3917172 for the same fresh trace control. Taking the maximum of three-component prediction and local yield opened 307425 directories; learning only direct-operation five-component rewards opened 372419. Removing the depth penalty from supported five-component predictions opened 372789; taking their maximum with local yield opened 307266. The five-component policy with the existing depth penalty was selected for a runtime trial; no timing improvement is inferred from these models. Raw reports: /tmp/dq-file-trace-ordering-model-path-contexts.json and /tmp/dq-file-trace-ordering-model-path-context-priority.json."},
+    {"name": "offline-directory-metadata-probes", "retained": false, "note": "A fresh readonly trace retained child-directory size, link count and timestamps observed while listing the parent. It contains 406210 directory records, 3759344 file entries and 493 errors; capture took 110.140s without benchmark cache preparation and is not a performance result. On this trace the control opened 327344 directories with metadata work proxy 3917172. Leaf-density, age-max, age-replacement, structural and newest-first policies opened 331787, 327487, 391622, 356534 and 391130 directories. Even the age-max policy required 4151921 work units after charging 361581 additional child probes, exceeding the control. No runtime prototype. Raw reports: /tmp/dq-file-metadata-directory-hints-20261013.jsonl and /tmp/dq-file-trace-ordering-model-directory-probes.json."},
+    {"name": "offline-evidence-tail-potential", "retained": false, "note": "A 16-fold tail-priority boost and ranking tails by estimated total remaining allocation both opened 337284 directories with metadata work proxy 3981799. Allowing any positive allocation to qualify sparse ancestor evidence opened 335914 directories with proxy 3995589; skipping zero-allocation ancestors opened 327556 directories with proxy 3941925. Control opened 339975 directories with proxy 4029176. Savings remained modest; no runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-evidence-tail-potential.json."},
+    {"name": "offline-directory-inode-yield", "retained": false, "note": "Learned direct-operation allocation and cost in directory inode-number neighborhoods of 4096, 32768 or 262144 inodes; a fourth policy used the maximum of local yield and the 32768-inode prediction. Inode identity is available from the freshly opened parent's getdents record, although this trace stores it in the child's later record. Models opened 359187, 379327, 388229 and 390467 directories with metadata work proxies 4170429, 4264054, 4306175 and 4329639, versus 339975 directories and proxy 4029176 for the control. Every policy increased work; no runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-directory-inode-yield.json."},
+    {"name": "offline-extreme-rewards", "retained": false, "note": "Nearest qualified ancestor priorities used the geometric mean of average and largest observed file, allocation-weighted mean (sum of squared allocation divided by sum), or largest observed file. Only current-invocation measurements supplied these hints. Models opened 348068, 349623 and 360548 directories with metadata work proxies 4071213, 4048685 and 4148156, versus 339975 directories and proxy 4029176 for the control. Every heuristic increased work; no runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-extreme-rewards.json."},
+    {"name": "isolated-directory-io-physical8192-first", "wall_s": [30.490, 24.022], "retained": false, "note": "DIRECTORY-ONLY DIAGNOSTIC, not full dq. A bounded 8192-directory window mapped each opened directory's first block with no-sync FIEMAP and sorted the window by physical address. Candidate first discovered 405714 directories and 3759248 regular names, reading 4700752 input blocks; native-order control second discovered 405715 directories and 3759274 regular names, reading 4700472 blocks. Small namespace changes occurred between scans. Fixture tests preserved all names and identical checksums; live physical ordering added latency without lowering read volume. No runtime integration. Raw report: /tmp/dq-isolated-directory-io-physical8192-first.json."},
+    {"name": "offline-git-pack-prior", "retained": false, "note": "A generic standard-format prior promoted .git, its objects child and objects/pack without estimating or crediting unseen allocations. Model opened 336692 directories, scanned 3326404 files and used metadata work proxy 3999788, versus 339975 directories and 4029176 proxy for the control. Less than one percent reduction; no runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-git-packs.json."},
+    {"name": "offline-direct-name-features", "retained": false, "note": "Learned current-invocation direct-operation allocation and cost by directory basename, parent basename and their pair, avoiding duplicated nested ancestor observations. Averaging supported predictions, taking their maximum with local yield, and selecting the most specific supported prediction opened 333477, 319491 and 362052 directories, with metadata work proxies 4023141, 3899483 and 4216180. Control opened 339975 directories with proxy 4029176. No significant modeled reduction and no runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-direct-name-features.json."},
+    {"name": "offline-attribution-ancestor-max", "retained": false, "note": "An explicitly optimistic diagnostic that removes all unresolved hard-link attribution stopped after 303494 directory visits and proxy 3699574, versus the control's 339975 directories and proxy 4029176. This is not a valid attribution certificate; any implementable lexical-frontier certificate would save less. Maximum observed yield from the nearest two or four qualified ancestors opened 326442 or 340756 directories with proxies 3905791 or 3975648; no runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-link-attribution-ancestor-max.json."},
+    {"name": "isolated-tailcost16-first", "wall_s": [40.503], "retained": false, "note": "Dividing file-tail scheduling priority by 16 left metadata measurements and the allocation certificate unchanged. All 56 dq library tests passed. Candidate first scanned 2956169 files, opened 345686 directories and read 4961984 input blocks; the unchanged reference second took 25.152s, scanned 3174673 files, opened 335329 directories and read 4864320 input blocks. Fewer file queries did not reduce directory reads or latency. Prototype reverted. Raw report: /tmp/dq-isolated-paired-tailcost16-first.json."},
+    {"name": "offline-tail-discounts", "retained": false, "note": "Dividing file-tail scheduling means by 4, 16 or 64 produced metadata work proxies 3937460, 3799434 and 3890402, versus 4029176 for the control. The 16-fold discount scanned fewer files but opened 343052 directories, more than the control's 339975. Its subsequent live reclaimed trial regressed latency and was reverted. Raw report: /tmp/dq-file-trace-ordering-model-tail-discounts.json."},
+    {"name": "offline-priority-refresh", "retained": false, "note": "Refreshing all queued priorities every 256, 1024 or 16384 opened directories produced metadata work proxies 3959492, 3960555 and 4059176, versus 4029176 at the unchanged 4096 interval. More frequent refresh saved only about 1.7% of modeled work while adding queue processing; no runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-priority-refresh.json."},
+    {"name": "offline-independent-depth-exploration", "retained": false, "note": "Explore a random directory depth independently of yield rank once per 2, 4, 8 or 16 pops. Metadata proxies were 4291477, 4101129, 3955274 and 3922075, versus 4029176 for the control. Frequent independent exploration increased work; sparse exploration saved only 2.7%. No runtime implementation or speedup claim. Raw report: /tmp/dq-file-trace-ordering-model-independent-depth-exploration.json."},
+    {"name": "offline-name-novelty", "retained": false, "note": "Unseen-name optimism, a decaying 64KiB or 1MiB exploration prior and a quarter-power name-frequency penalty produced metadata work proxies 3942262, 3890664, 4193952 and 4042255, versus 4029176 for the control. Neither optimistic novelty nor name rarity provided a substantial work reduction. No runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-name-novelty.json."},
+    {"name": "offline-parent-structure", "retained": false, "note": "Child rewards were learned by the freshly opened parent's file-count and child-count buckets, optionally including its measured pilot mean. Replacing ancestor yield, taking its maximum, adding pilot features and taking that maximum produced metadata proxies 4422354, 3955367, 4244193 and 4127651, versus 4029176 for the control. No substantial work reduction and no runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-parent-structure.json."},
+    {"name": "offline-reward-accounting", "retained": false, "note": "Certificate progress, unique allocation, a 128-work recent average and descendant-only rewards were combined with random depth16 scheduling. Metadata work proxies were 3931061, 4149066, 3959589 and 3847493, versus 4029176 for the control. Descendant-only rewards reduced modeled work modestly; no runtime speedup is inferred. Hard-link settlement has complementary rewards and does not satisfy the cited submodular-cover assumptions. Raw report: /tmp/dq-file-trace-ordering-model-reward-accounting.json."},
+    {"name": "isolated-cheapleaf512-first", "wall_s": [21.983, 20.960], "retained": false, "note": "Leaves up to 512 names finished during their first open only after a pilot observed at most 4KiB per file. All 56 dq tests passed, including the productive-tail regression. Candidate first visited 336821 directories, scanned 3203297 files and read 4883840 input blocks; unchanged depth16 control second visited 334171 and read 4858368 input blocks. Similar read volume and worse latency; prototype reverted. Raw report: /tmp/dq-isolated-paired-cheapleaf512-first.json."},
+    {"name": "offline-random-stratified-tails", "retained": false, "note": "Randomized pending-file order left directory visits unchanged at 339975 and saved only seven metadata operations in the model. Stratifying every later file chunk reduced directory visits to 332399 and metadata work proxy to 3938411. Small work changes do not establish a speedup; no runtime prototype. Raw report: /tmp/dq-file-trace-ordering-model-random-stratified-tails.json."},
+    {"name": "offline-rand16-linkjoin", "retained": false, "note": "Combining low-priority uniform depth selection with optimistic hard-link namespace joining visited the same 339975 directories as the control. Query work proxy fell by 2.4% to 3933071, with representative validation charged but not compared against an atomic current snapshot. No runtime shortcut was implemented. Raw report: /tmp/dq-file-trace-ordering-model-rand16-linkjoin.json."},
+    {"name": "offline-tail-depth-cost-cheapleaf", "retained": false, "note": "File-tail depth penalties, removing fanout from observed work cost, and completing leaves up to 512 files only after a <=4KiB pilot mean produced metadata work proxies 3935688, 3878149 and 3955419, versus 4029176 for unchanged depth16. All reductions were modest; no live speedup is inferred. Raw report: /tmp/dq-file-trace-ordering-model-tail-depth-cost-cheapleaf.json."},
+    {"name": "offline-weighted-depth", "retained": false, "note": "Depth selection weighted toward shallow, deep, queue population or freshly observed yield was modeled from the per-file capture. Metadata work proxies were 3839655, 4106135, 4162954 and 3986795, versus 4029176 for uniform depth selection. Shallow weighting gave a small work reduction; the other variants were similar or worse. No runtime implementation or measured speedup. Raw report: /tmp/dq-file-trace-ordering-model-weighted-depth.json."},
+    {"name": "isolated-parent-groups-first", "wall_s": [21.861, 20.970], "retained": false, "note": "Low-priority selection chose depth, parent group, then work uniformly. All 57 dq tests passed, including group removal and queue rebuild conservation. Candidate first visited 316152 directories and read 4701384 input blocks; unchanged depth16 control second visited 337769 and read 4872704 input blocks. Less metadata work did not improve latency; runtime prototype reverted. Raw report: /tmp/dq-isolated-paired-parent-groups-first.json. Offline model: /tmp/dq-file-trace-ordering-model-random-parent-branch.json; parent grouping reduced the metadata proxy from 4029176 to 3878983 and branch grouping to 3929390, without modeling I/O or worker dispatch."},
+    {"name": "isolated-frontier-jobs-first", "wall_s": [27.195, 29.889], "retained": false, "note": "Adaptive worker jobs shortened when the frontier lacked enough work to fill every dispatch slot, restoring eight-item batches as it grew. All 56 dq tests passed. Candidate first visited 335468 directories and read 4867368 input blocks; unchanged depth16 control second visited 338950 and read 4870824 input blocks. Candidate kept about 30 outstanding device reads throughout most samples; control spent its first 15 seconds mostly waiting for request tags before reaching the same depth. Comparable work and changing throughput prevent a significant gain claim; runtime prototype reverted. Optional per-second monitoring adds overhead to both. Raw report: /tmp/dq-isolated-paired-frontier-jobs-first.json."},
+    {"name": "isolated-leaf128-first", "wall_s": [22.489], "retained": false, "note": "Finish leaves with at most 128 files during their first visit. All 56 dq tests passed. Candidate first visited 338898 directories, scanned 3203108 files and read 4892664 input blocks; unchanged depth16 control second took 20.906s, visited 327800 directories and read 4797312 input blocks. Runtime limit restored to 32. A 512-file variant failed the existing productive-tail regression before benchmarking and was not timed. Raw report: /tmp/dq-isolated-paired-leaf128-first.json. Offline leaf-size model: /tmp/dq-file-trace-ordering-model-leaf-size.json."},
+    {"name": "isolated-listing64k-first", "wall_s": [24.661], "retained": false, "note": "Native directory reads returned at most roughly 64 KiB of entries, retaining opaque getdents cursors in up to 256 bounded descriptors. Full-coverage tests matched precise scanning for more than 5000 files, long-name child directories, sparse files and hard links. Candidate first visited 331153 directories, scanned 3267957 files and read 4831168 input blocks; unchanged random-depth16 control second took 20.555s and read 4851744 input blocks. Comparable physical reads and worse latency; runtime prototype reverted. Raw report: /tmp/dq-isolated-paired-listing64k-first.json."},
+    {"name": "offline-random-depth16-ranked", "retained": false, "note": "Within each randomly chosen depth, select highest yield rank and then random ties. Offline directory visits increased to 370551 from 339975, and metadata work proxy to 4216364 from 4029176. No runtime implementation or latency claim. Raw report: /tmp/dq-file-trace-ordering-model-random-depth-ranked.json."},
+    {"name": "isolated-random-depth16-lifo-first", "wall_s": [22.538], "retained": false, "note": "Uniform depth selection retained LIFO order within each selected depth. All 56 dq tests passed. Candidate first scanned 3635470 files, visited 395441 directories and read 5366848 input blocks; random-within-depth control second took 20.473s, visited 329886 directories and read 4817192 input blocks. More work outweighed hoped-for locality; prototype reverted. Offline model likewise increased directory visits to 364342 from 339975. Raw reports: /tmp/dq-isolated-paired-depth16-lifo-first.json and /tmp/dq-file-trace-ordering-model-random-depth-lifo.json."},
+    {"name": "isolated-worker8-tag-diagnostic", "wall_s": [31.690, 20.690], "retained": false, "note": "Same immutable random-depth16 binary ran first with eight workers, then with 32. Input blocks were 4897808 and 4883400, and directory visits 338896 and 336908. Eight workers regressed by 53%; lowering concurrency did not provide a fix. Every sample includes a one-second device/worker-wait timeline, with monitoring overhead. Raw report: /tmp/dq-isolated-paired-worker8-tag-diagnostic.json."},
+    {"name": "isolated-io-timeline-first", "wall_s": [22.163, 35.376], "note": "Monitored random-depth16 first and small-leaf32 control second. The control spent most of its first 28 seconds with almost all 32 workers waiting in blk_mq_get_tag and only about 2–7 outstanding device requests; it then reached about 30. Candidate reached about 30 outstanding requests earlier. Device-wide reads closely matched dq's own reads, and ancestor io.stat showed negligible competing reads on this disk. These observations narrow the cause to request allocation/scheduling, but do not prove an algorithmic 37% speedup or a particular BFQ heuristic. Raw report: /tmp/dq-isolated-paired-io-timeline-first.json."},
+    {"name": "isolated-clone-io-after-serialization", "wall_s": [28.646, 32.752], "retained": false, "note": "The same random-depth16 binary ran first with CLONE_IO applied to all 32 workers, then with an identical independent-context tracer. Shared input blocks were 4803512 and independent 4845744; average outstanding device requests were 8.3 and 6.2. Earlier shared-context testing also failed to beat its control. This pair does not establish a scheduling fix or a significant gain, particularly while device throughput continues to vary. Raw reports: /tmp/dq-isolated-shared-io-depth16-after-serialization.json and /tmp/dq-isolated-independent-io-depth16-after-serialization.json."},
+    {"name": "isolated-random-depth16-confirmation", "wall_s": [93.622, 22.352, 23.788], "note": "Three alternating pairs retained every result: small-leaf32 controls were 97.751, 60.468 and 25.498s in AB/BA/AB order. Candidate read volume remained about 4.85 million 512-byte blocks and directory visits remained near 334000. The first slow candidate averaged about 0.94 outstanding device reads, versus 15.0 and 12.2 for its later trials and about 33 in earlier 20s trials. CPU time remained about 46s. Controls likewise crossed throughput regimes. The medians cannot establish a large algorithmic speedup. CPU quotas and current memory-pressure counters do not explain the slowdown; BFQ is active with low_latency=1, slice_idle=8 and strict_guarantees=0. Raw report: /tmp/dq-isolated-paired-random-depth16-confirmation.json."},
+    {"name": "isolated-random-depth24-first", "wall_s": [22.214], "retained": false, "note": "Random depth selection covered priorities through 24 instead of 16. Candidate first visited 359023 directories, scanned 3087879 files and read 5064056 input blocks; the narrower random-depth16 control second took 20.596s, visited 332609 directories and read 4769776 input blocks. Fewer file queries did not offset more directory reads; threshold 16 restored. Raw report: /tmp/dq-isolated-paired-random-depth24-first.json."},
+    {"name": "isolated-random-depth16-first", "wall_s": [20.129], "note": "The adaptive frontier chose uniformly among nonempty depth groups, then uniformly among queued work, once all priorities were at most 16. High-yield ranks retained their ordering. All 56 dq tests passed. Candidate first visited 329524 directories, scanned 3162351 files and read 4825512 input blocks; small-leaf32 control second took 22.090s, visited 400751 directories and read 5357560 input blocks. This single pair is not a significant verified gain over earlier 20s candidate results. Raw report: /tmp/dq-isolated-paired-random-depth16-first.json."},
+    {"name": "reference-check", "wall_s": [22.455, 22.227, 21.718]},
+    {"name": "marginal-yield", "wall_s": [23.200, 22.422, 22.417], "retained": false},
+    {"name": "file-evidence", "wall_s": [23.537, 22.254, 21.951], "retained": false},
+    {"name": "suffix-groups", "wall_s": [22.867, 22.042, 22.377], "retained": false},
+    {"name": "depth-exploration", "wall_s": [22.949, 104.436, 104.622], "retained": false, "note": "Unchanged subsequent reference also took 109.565s; device behavior changed."},
+    {"name": "reference-after-depth", "wall_s": [109.565]},
+    {"name": "reference-idle-io", "wall_s": [114.259], "retained": false, "note": "The next trial's reclaim failed with 198164360 eligible cache bytes; no second scan ran."},
+    {"name": "name-yield", "wall_s": [31.846, 33.096, 33.268], "retained": false},
+    {"name": "reference-after-name", "wall_s": [28.395, 30.814, 32.763]},
+    {"name": "tiny-tail-peer", "wall_s": [36.529, 33.780, 37.637], "retained": false},
+    {"name": "file-tail-locality", "wall_s": [22.950, 22.159, 21.902], "retained": false},
+    {"name": "reference-after-tail-locality", "wall_s": [21.949, 21.683, 21.981]},
+    {"name": "file-inode-order", "wall_s": [22.562, 21.422, 21.984], "retained": false},
+    {"name": "inode-neighborhood-yield", "wall_s": [28.376, 22.821, 34.009], "retained": false},
+    {"name": "descent-probes", "wall_s": [30.112, 22.514, 21.501], "retained": false},
+    {"name": "reference-after-research", "wall_s": [21.939, 21.765, 21.710]},
+    {"name": "directory-block-cost", "wall_s": [32.178, 27.440, 25.791], "retained": false},
+    {"name": "reference-after-block-cost", "wall_s": [24.839, 25.109, 22.537]},
+    {"name": "inode-locality-samples", "wall_s": [21.561, 21.749, 21.773], "retained": false, "note": "At most 16 extra pilot-neighbor probes in directories with at least 512 files. A larger probe budget failed the existing small-file sampling regression and was reduced before benchmarking."},
+    {"name": "reference-after-locality-samples", "wall_s": [21.913, 21.755, 21.437]},
+    {"name": "descendant-evidence", "wall_s": [22.688, 22.177, 21.797], "retained": false, "note": "Child-directory priorities inherited measured descendant yield while excluding each ancestor's direct-file yield. This did not reduce directory visits or physical reads enough to improve latency."},
+    {"name": "reference-after-descendant-evidence", "wall_s": [21.714, 21.676, 21.723]},
+    {"name": "priority-inode-cscan", "wall_s": [25.313, 27.433, 24.464], "retained": false, "note": "C-SCAN inode hints ordered the global frontier within the existing yield-priority buckets. Directory and physical-read counts remained close to the unchanged baseline."},
+    {"name": "reference-16-workers", "wall_s": [24.253, 24.154, 23.930], "retained": false},
+    {"name": "reference-100-workers", "wall_s": [21.050, 20.589, 23.347], "retained": false, "note": "The modest median difference and wide spread do not establish a significant improvement."},
+    {"name": "retained-directory-handles", "wall_s": [21.623, 21.205, 21.320], "retained": false, "note": "Up to 4096 shared directory descriptors supported parent-relative child opens and deferred-file reads. This did not materially reduce physical reads or wall time."},
+    {"name": "ancestor-evidence-512", "wall_s": [22.138], "retained": false, "note": "At least 512 measured work units were required before inheriting an ancestor's average yield."},
+    {"name": "measured-read-cost", "wall_s": [24.569], "retained": false, "note": "Directory and continuation priorities used observed allocation per microsecond of worker read time, with no additional profiling enabled. It scanned more files and did not reduce directory reads."},
+    {"name": "broad-ancestor-yield", "wall_s": [30.408], "retained": false, "note": "Deep directories inherited yield only from ancestors at depths 1 through 3. Broad averages alone failed to reduce visits materially."},
+    {"name": "reference-after-broad-yield", "wall_s": [24.743]},
+    {"name": "shrinkage-128", "wall_s": [22.962], "retained": false, "note": "Ancestor-to-parent averages used a 128-work-unit pseudo-count. It still opened about 403,000 directories."},
+    {"name": "observed-operation-cost", "wall_s": [22.248], "retained": false, "note": "Discovered child directories were removed from the cost denominator until actually visited. This did not materially reduce directory reads."},
+    {"name": "fine-grained-yield", "wall_s": [21.166], "retained": false, "note": "Half-octave priorities competed below 4 KiB/file without the tiny-file floor. Directory visits fell to 351527 and input blocks to 4931312, but the following reference was 21.717s, so the latency gain alone was small."},
+    {"name": "reference-after-fine-yield", "wall_s": [21.717]},
+    {"name": "fine-leaf-chunks", "wall_s": [20.961], "retained": false, "note": "With half-octave priorities, directories without child directories used 256-file chunks. Directory visits fell to 347866 and input blocks to 4891992; the latency difference was still small."},
+    {"name": "fine-file-evidence", "wall_s": [21.955], "retained": false, "note": "Combined half-octave ranks and larger leaf chunks with at least eight actual file observations and no unopened-child cost penalty. It increased directory visits relative to fine-leaf-chunks."},
+    {"name": "shared-io-context", "wall_s": [22.205], "retained": false, "note": "A clone-only unprivileged tracer added CLONE_IO to all 50 worker creations in the unchanged reference. This was slower than the independent-context control and did not reduce directory work or read volume."},
+    {"name": "independent-io-context", "wall_s": [21.509], "note": "Same clone-only tracer and unchanged reference, without CLONE_IO. All 50 clone calls were observed and zero were modified."},
+    {"name": "partial-tree-exploration", "wall_s": [2.120], "retained": false, "note": "Terminal scope changed before this trial. Its own reclaim passed, but earlier cache charges had moved to the containing work.slice. It read only 162424 input blocks while opening 397282 directories; this cannot establish a first-use optimization."},
+    {"name": "reference-after-partial-tree", "wall_s": [2.793], "note": "Same cache-scope mismatch: the unchanged reference read only 109752 input blocks. Both samples are preserved. The harness now selects the nearest user-owned containing slice to cover reparented charges."},
+    {"name": "reference-stable-domain", "wall_s": [24.195], "note": "Containing work.slice reclaim restored 5277776 input blocks and 395667 directory visits. Preparation took 11.333s outside the timed invocation."},
+    {"name": "partial-tree-stable-domain", "wall_s": [23.068], "retained": false, "note": "After fixing reclaim scope, the candidate opened 400023 directories, scanned 3501088 files and read 5403000 input blocks. No significant reduction in physical work or latency."},
+    {"name": "fine-descendant-files", "wall_s": [22.207], "retained": false, "note": "Nearest ancestor with eight observed descendant files excluded its own file yield. Combined with half-octave priorities and larger leaf chunks, it still visited 374238 directories and read 5174312 input blocks."},
+    {"name": "fine-conservative-prior", "wall_s": [126.328], "retained": false, "note": "An 8 KiB/work prior replaced the 1 MiB/work prior. It visited 404538 directories and read 5453272 input blocks; average device queue depth fell from about 43 to 5.5. The unchanged subsequent control returned to 21.899s. This policy was rejected."},
+    {"name": "reference-after-conservative-prior", "wall_s": [21.899], "note": "Unchanged reference immediately after the 126.328s candidate: 399461 directory visits and 5321488 input blocks."},
+    {"name": "reference-200-workers", "wall_s": [126.968], "retained": false, "note": "Unchanged algorithm with 200 threads visited 405864 directories and scanned 3660420 files. Larger concurrency did not improve throughput."},
+    {"name": "fine-suffix-continuations", "wall_s": [22.625], "retained": false, "note": "At most eight filename-extension groups per directory were sampled and scheduled separately, with eight samples per group. Complete overflow and hard-link accounting tests passed. It visited 370216 directories and read 5122768 input blocks, so the experiment was reverted."},
+    {"name": "fine-cohort-cost4", "wall_s": [27.268], "retained": false, "note": "Fresh subtree yield was pooled by directory basename, normalizing hexadecimal names by length, and directory scores were reduced fourfold relative to file tails. It visited 400687 directories and read 5405888 input blocks, regressing despite the simplified model's modest work-count improvement."},
+    {"name": "fine-unique-cohort-cost4", "wall_s": [30.090], "retained": false, "note": "Cohort and file-tail rewards counted only each linked inode's first observed allocation. It visited 400691 directories and read 5327472 input blocks; name pooling still regressed."},
+    {"name": "reference-after-cohort", "wall_s": [97.500], "note": "Unchanged reference visited 403443 directories and read 5324432 input blocks. Substantially slower device latency with comparable physical volume; retained without discarding."},
+    {"name": "fine-unique-local", "wall_s": [25.101], "retained": false, "note": "Nearest-ancestor priorities and file tails used fresh unique allocation rewards. It visited 366711 directories and read 4752640 input blocks, reducing read volume without a significant latency gain. Untimed UID-1000 descriptor audit checked 4838 descriptors, could not access or raced on 397, and found no unlinked allocation on /expanse; no allocation bound was changed."},
+    {"name": "flat-directory-cscan", "wall_s": [23.016], "retained": false, "note": "All deep directories shared a priority band and used C-SCAN inode ordering. It visited 405946 directories and read 5461936 input blocks; no significant gain. The prototype was reverted."},
+    {"name": "single-work-feedback", "wall_s": [23.864], "retained": false, "note": "One work item per dispatch gave the coordinator immediate feedback. It visited 398818 directories, scanned 3690513 files and read 5397328 input blocks; no significant gain. Eight-item dispatch was restored."},
+    {"name": "fine-context-cost4", "wall_s": [24.694], "retained": false, "note": "Fresh subtree rewards were pooled by the pair of parent and child directory names, with hexadecimal names normalized by length. It visited 358035 directories, scanned 3238450 files and read 5038312 input blocks. This reduced visits but did not establish a latency improvement; testing worker concurrency separately."},
+    {"name": "fine-context-100-workers", "wall_s": [164.076], "retained": false, "note": "The same context predictor with 100 workers visited 402389 directories, scanned 3654638 files and read 5413576 input blocks. Higher concurrency failed badly; 50 remains the default."},
+    {"name": "reference-best-effort-0", "wall_s": [29.283], "retained": false, "note": "Explicit ordinary-user best-effort priority 0 did not improve the unchanged scanner. It visited 397284 directories and read 5297336 input blocks. No host scheduler settings changed."},
+    {"name": "reference-best-effort-7", "wall_s": [25.191], "retained": false, "note": "Explicit ordinary-user best-effort priority 7 did not establish a gain. It visited 405898 directories and read 5386416 input blocks."},
+    {"name": "isolated-reclaim-smoke", "wall_s": [0.058, 0.072], "note": "Small dev-directory measurement check only: both first and repeat performed 4248 physical input blocks. No full-filesystem improvement is claimed. Raw report: /tmp/dq-isolated-reclaim-smoke.json."},
+    {"name": "isolated-reference-context-max", "wall_s": [20.915, 21.120, 21.090], "note": "Unchanged reference in an interleaved isolated-cgroup comparison. All first and repeated invocations retained, 1.0% timing spread. Raw report: /tmp/dq-isolated-paired-context-max.json."},
+    {"name": "isolated-context-max", "wall_s": [22.087, 22.104, 22.058], "retained": false, "note": "Fresh parent/child-name pools used the maximum observed yield. All three candidates were slower than all three interleaved references, with 0.2% timing spread; the prototype was reverted. Same raw paired report."},
+    {"name": "isolated-depth-penalty-initial", "wall_s": [19.995], "note": "One half-octave rank of depth penalty per level below the three chart levels: 343340 directory visits and 4890720 physical input blocks. Paired unchanged reference was 22.675s. Raw report: /tmp/dq-isolated-paired-depth-penalty.json."},
+    {"name": "isolated-depth-penalty-confirmation", "wall_s": [20.100, 20.237, 20.284], "note": "Three alternating comparisons: unchanged reference 21.719, 20.932, 21.198s. Median difference 4.5%, a modest gain rather than the goal's significant improvement. Candidate directory visits 351741–362815, versus reference 389956–404976; physical input blocks also fell. Raw report: /tmp/dq-isolated-paired-depth-penalty-confirmation.json."},
+    {"name": "isolated-depth-penalty2", "wall_s": [20.267], "retained": false, "note": "Double the depth penalty: 360917 directory visits and 5044832 input blocks, versus unchanged reference 21.241s. No improvement on the smaller penalty. Raw report: /tmp/dq-isolated-paired-depth-penalty2.json."},
+    {"name": "isolated-directory-fifo", "wall_s": [21.492], "retained": false, "note": "Equally ranked directories used discovery order while file continuations retained locality. Unchanged reference 21.549s. Candidate visited 375667 directories and read 5181512 input blocks; prototype reverted. Raw report: /tmp/dq-isolated-paired-directory-fifo.json."},
+    {"name": "isolated-context-promotion", "wall_s": [67.755], "retained": false, "note": "A parent/child-name predictor only promoted directory priority above its local score. Paired reference was 23.698s. Candidate read 4936416 own input blocks, while device-wide reads were 19591960 blocks, so substantial excess device I/O prevents a clean algorithm comparison. Every result is retained. Prototype reverted. Raw report: /tmp/dq-isolated-paired-context-promotion.json."},
+    {"name": "isolated-depth-32-workers-initial", "wall_s": [19.812], "note": "Raw allocation rewards, fine ranks, larger leaf chunks and depth penalty 1 with 32 workers. Unchanged reference was 31.143s. Own/device read counters were close for both builds; candidate visited 340203 directories and read 4781088 input blocks. Raw report: /tmp/dq-isolated-paired-depth-32-workers.json."},
+    {"name": "isolated-depth-32-workers-confirmation", "wall_s": [20.344, 23.815, 19.717], "note": "Alternating reference trials were 35.205, 22.794 and 22.165s; candidate median was 10.8% lower, but its second trial was slower than the paired reference. Candidate directories ranged 337575–383639 versus 401987–405151 for reference. All firsts and outliers retained. Further experiments are needed for a stronger result. Raw report: /tmp/dq-isolated-paired-depth-32-workers-confirmation.json."},
+    {"name": "isolated-depth4-32-workers", "wall_s": [22.306], "retained": false, "note": "A four-rank penalty per depth level increased directory visits to 399778 and input blocks to 5410072. Paired reference 22.447s. The stronger penalty was reverted. Raw report: /tmp/dq-isolated-paired-depth4-32-workers.json."},
+    {"name": "isolated-file-bonus4-32-workers", "wall_s": [21.717], "retained": false, "note": "File continuations received a four-rank bonus. Paired reference 21.896s; candidate visited 383525 directories and read 5251584 input blocks. No meaningful gain; reverted. Raw report: /tmp/dq-isolated-paired-file-bonus4-32-workers.json."},
+    {"name": "isolated-depth6-floor-32-workers", "wall_s": [22.035], "retained": false, "note": "An optimistic 1 MiB/work priority floor through depth six increased visits to 401938 and input blocks to 5416880. Saved morning baseline (SHA de0357c1421245651cb49b94ebeb688fa429854e5255f58566b4f4dc687196be) took 23.938s and visited 404492 directories. No reduction in physical metadata work; floor reverted. Raw report: /tmp/dq-isolated-paired-morning-depth6-floor.json."},
+    {"name": "isolated-depth-64-workers", "wall_s": [20.351], "retained": false, "note": "64 workers with fine ranks, larger leaf chunks and depth penalty 1 did not improve on 32-worker candidate times. Reference first after bootstrap took 40.650s; candidate second took 20.351s. Own/device read blocks were close for both, but the startup-order effect needed checking. Raw report: /tmp/dq-isolated-paired-depth-64-workers.json."},
+    {"name": "isolated-depth-32-workers-first", "wall_s": [21.185], "note": "Candidate first after full preparation, then reference 21.759s. Candidate visited 349274 directories and read 4947152 input blocks; reference visited 402683 and read 5364120. This order shows only a 2.6% latency gain, despite fewer directory visits. It does not confirm the much larger differences against slow first references. Raw report: /tmp/dq-isolated-paired-depth-32-workers-first.json."},
+    {"name": "isolated-clipped64k-first", "wall_s": [22.282], "retained": false, "note": "Per-file ancestor scheduling rewards were capped at 64 KiB, while raw file-tail hints, full allocation accounting and the stopping bound stayed exact. Candidate first visited 383771 directories and read 5245616 input blocks; reference second took 21.412s. The cap regressed and was reverted. Raw report: /tmp/dq-isolated-paired-clipped64k-first.json."},
+    {"name": "isolated-ring2-first", "wall_s": [21.948], "retained": false, "note": "Fresh file-tail metadata was submitted through per-thread io_uring rings with two kernel workers per ring. Required-ring correctness test passed for regular, linked, sparse and symlink files plus missing-entry errors. Candidate first used 58.044 CPU seconds, visited 381025 directories and read 5229752 input blocks; reference second took 22.635s, used 46.334 CPU seconds, visited 381094 directories and read 5176840 input blocks. No meaningful reduction in physical work; prototype and dependency reverted. Raw report: /tmp/dq-isolated-paired-ring2-first.json."},
+    {"name": "isolated-physical-job8-first", "wall_s": [21.841], "retained": false, "note": "Directories in each eight-item worker job were opened, freshly measured and ordered by the first extent from read-only FIEMAP. Coordinator feedback retained dispatch order. Candidate first visited 369177 directories and read 5112624 input blocks; reference second took 20.346s, visited 403708 directories and read 5088488 input blocks. No meaningful gain; prototype reverted. Raw report: /tmp/dq-isolated-paired-physical-job8-first.json."},
+    {"name": "isolated-pilot2-first", "wall_s": [22.080], "retained": false, "note": "Two evenly spread pilot files replaced eight per directory. Candidate first visited 347847 directories, scanned 3256202 files and read 4929064 input blocks; reference second took 21.228s. Candidate used 40.183 system CPU seconds versus 36.851 for reference. Filesystem used allocation remained 448774184960 bytes before and after each scan. No meaningful improvement; eight pilots restored. Raw report: /tmp/dq-isolated-paired-pilot2-first.json."},
+    {"name": "isolated-explore8-first", "wall_s": [28.569], "retained": false, "note": "Every eighth adaptive work selection used an independent shallow-directory queue; states were shared and never dispatched twice. Candidate first visited 369427 directories, scanned 3391575 files and read 4973680 own input blocks (device read 5112128); reference second took 24.057s and read 5196304 own input blocks (device read 5192512). The queue/accounting tests passed, but latency regressed; runtime prototype reverted. Raw report: /tmp/dq-isolated-paired-explore8-first.json."},
+    {"name": "isolated-small-leaf32-first", "wall_s": [20.576], "note": "Leaf directories with at most 32 regular entries finished their file metadata during the first directory visit. Candidate first visited 339574 directories, scanned 3155600 files and read 4858648 input blocks; reference second took 21.882s, visited 403272 directories and read 5360848 input blocks. A modest 6% gain, still insufficient for the goal. Raw report: /tmp/dq-isolated-paired-small-leaf32-first.json."},
+    {"name": "isolated-small-files64-first", "wall_s": [20.707], "retained": false, "note": "Every directory with at most 64 regular entries completed their metadata during its first visit. Candidate first visited 344431 directories, scanned 3190658 files and read 4892568 input blocks; reference second took 21.692s, visited 398721 directories and read 5362320 input blocks. This did not improve on the smaller leaf-only change; leaf32 restored. Raw report: /tmp/dq-isolated-paired-small-files64-first.json."},
+    {"name": "isolated-stripes8-first", "wall_s": [25.361], "retained": false, "note": "Leaf directories with at least 1024 pending regular names split into at most eight independent continuations, dispatched in separate jobs. A full-coverage regression matched precise scanning for every name, sparse allocation and canonical hard links. Candidate first visited 329373 directories, scanned 3259160 files and read 4757368 input blocks; reference second took 21.580s and read 5350592 input blocks. Reduced directory/read work did not reduce latency; parallel stripes and dispatch change reverted. Raw report: /tmp/dq-isolated-paired-stripes8-first.json."},
+    {"name": "isolated-timed-yield-first", "wall_s": [20.560], "retained": false, "note": "Directory and file-tail rewards used freshly measured bytes per read nanosecond, normalized to a nominal 10 us metadata operation. Candidate first visited 339685 directories, scanned 3145664 files and read 4873368 input blocks; reference second took 21.952s and read 5375648 input blocks. The 6.3% difference does not improve on the small-leaf candidate or meet the goal; timing heuristic reverted. Raw report: /tmp/dq-isolated-paired-timed-yield-first.json."},
+    {"name": "isolated-streamed-feedback-first", "wall_s": [22.566], "retained": false, "note": "Workers sent each completed read immediately while keeping eight-item pool jobs and decrementing in-flight jobs only after their last result. All 55 dq tests passed. Candidate first visited 384006 directories, scanned 3583493 files and read 5274368 input blocks; reference second took 21.876s and read 5337232 input blocks. Earlier feedback increased physical work and regressed latency; prototype reverted. Raw report: /tmp/dq-isolated-paired-streamed-feedback-first.json."},
+    {"name": "isolated-signed-depth-first", "wall_s": [21.961], "retained": false, "note": "512 priority buckets preserved depth differences below zero yield instead of saturating all such work into one LIFO bucket. The queue test covered all buckets and all 55 dq tests passed. Candidate first visited 381868 directories, scanned 3395510 files and read 5139888 input blocks; reference second took 22.664s and read 5274752 input blocks. The 3.1% difference did not improve on the retained small-leaf candidate; prototype and expanded queue reverted. Raw report: /tmp/dq-isolated-paired-signed-depth-first.json."}
+  ],
+  "trial_notes": "Times here are rounded to milliseconds. Raw reports are /tmp/dq-cgroup-reclaim-NAME.json and retain all counters and full precision. These are paper-inspired heuristics, not complete reproductions or refutations of the papers' algorithms."
+}
